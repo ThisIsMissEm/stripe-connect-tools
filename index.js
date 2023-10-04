@@ -98,6 +98,8 @@ async function main() {
     application_fee: [],
   };
 
+  const unknownTransactions = [];
+
   const payouts = [];
   const transactions = [];
   const charges = [];
@@ -142,6 +144,7 @@ async function main() {
       spinner.warn(
         `Unknown transaction type: ${transaction.type}, id: ${transaction.id}`
       );
+      unknownTransactions.push(transaction);
       continue;
     }
 
@@ -216,6 +219,8 @@ async function main() {
   console.log("\n");
   console.log(taxesAndFees);
   console.log(totals);
+
+  console.log({ unknownTransactions });
 }
 
 main()

@@ -132,3 +132,5 @@ dist
 # ignore any downloaded reports
 *.csv
 *.pdf
+
+downloads/*.pdf

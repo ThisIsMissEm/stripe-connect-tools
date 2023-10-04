@@ -1,6 +1,10 @@
 import Stripe from "stripe";
 import prompts from "prompts";
 import ora from "ora";
+import { createWriteStream } from "node:fs";
+import { Readable } from "node:stream";
+import { finished } from "node:stream/promises";
+import { join as joinPath } from "node:path";
 
 import { getMonthChoices, formatPeriod } from "./src/date-fns.js";
 
@@ -48,54 +52,12 @@ function getStripeClients() {
 //   }
 // }
 
-async function main() {
-  // 1. Fetch all STRIPE_TOKEN_XXXX environment variables
-  const [stripeClients, stripeAccounts] = getStripeClients();
-
-  if (stripeAccounts.length < 1) {
-    console.log(
-      "No stripe credentials found, please make sure you set them in .env as STRIPE_TOKEN_[name]\nIf you're using 1password, make sure the credential has a value."
-    );
-    process.exit(1);
-  }
-
-  // 2. Prompt for which account and time period to fetch data for:
-  const responses = await prompts([
-    {
-      type: "select",
-      name: "account",
-      message: "Please select which Stripe account to use:",
-      choices: stripeAccounts.sort().map((account) => ({
-        title: account,
-        value: account,
-      })),
-    },
-    {
-      type: "select",
-      name: "period",
-      message: "Select the period to create query for?",
-      choices: getMonthChoices(),
-    },
-  ]);
-
-  if (!responses.account || !responses.period) {
-    console.log("\nInterrupted, okay, bye!");
-    return process.exit(0);
-  }
-
-  console.log(
-    `\nOkay we'll fetch from ${responses.account} for ${formatPeriod(
-      responses.period
-    )}\n`
-  );
-
+async function fetchBalanceTransactions(stripe, period) {
   const spinner = ora({
     text: "Fetching transactions...",
     spinner: "bouncingBar",
     color: "yellow",
   }).start();
-
-  const stripeClient = stripeClients[responses.account];
 
   const taxesAndFees = {
     tax: [],
@@ -125,10 +87,10 @@ async function main() {
 
   const knownTransactionTypes = ["charge", "payout", "stripe_fee"];
 
-  for await (const transaction of stripeClient.balanceTransactions.list({
+  for await (const transaction of stripe.balanceTransactions.list({
     created: {
-      gte: responses.period.start.valueOf() / 1000,
-      lt: responses.period.end.valueOf() / 1000,
+      gte: period.start.valueOf() / 1000,
+      lt: period.end.valueOf() / 1000,
     },
     expand: ["data.source"],
   })) {
@@ -226,6 +188,117 @@ async function main() {
   console.log(totals);
 
   console.log({ unknownTransactions });
+}
+
+async function downloadInvoices(stripe, accountName, period) {
+  const promises = [];
+
+  for await (const invoice of stripe.invoices.list({
+    created: {
+      gte: period.start.valueOf() / 1000,
+      lt: period.end.valueOf() / 1000,
+    },
+    expand: ["data.customer", "data.charge"],
+    status: "paid",
+  })) {
+    // fr-CA produces YYYY-MM-DD format dates:
+    const formattedDate = Intl.DateTimeFormat("fr-CA", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date(invoice.created * 1000));
+
+    // Because Ko-fi doesn't collect the darn customer's country:
+    const country =
+      invoice.customer_address?.country ||
+      invoice.charge?.billing_details?.address?.country ||
+      invoice.charge?.payment_method_details?.card?.country;
+
+    const invoiceUrl = invoice.invoice_pdf;
+    const invoiceFilename = `${formattedDate}-${accountName}-${invoice.number}-${country}.pdf`;
+
+    const invoicePdf = await fetch(invoiceUrl, { redirect: "follow" });
+
+    if (
+      !invoicePdf.ok ||
+      !invoicePdf.body ||
+      invoicePdf.headers.get("Content-Type") !== "application/octet-stream"
+    ) {
+      console.error(`Could not download invoice PDF: ${invoice.id}`);
+      console.error(invoicePdf);
+
+      continue;
+    }
+
+    const destination = joinPath(process.cwd(), "downloads", invoiceFilename);
+
+    const fileStream = createWriteStream(destination, { flags: "wx" });
+    promises.push(finished(Readable.fromWeb(invoicePdf.body).pipe(fileStream)));
+  }
+
+  await Promise.allSettled(promises);
+}
+
+async function main() {
+  // 1. Fetch all STRIPE_TOKEN_XXXX environment variables
+  const [stripeClients, stripeAccounts] = getStripeClients();
+
+  if (stripeAccounts.length < 1) {
+    console.log(
+      "No stripe credentials found, please make sure you set them in .env as STRIPE_TOKEN_[name]\nIf you're using 1password, make sure the credential has a value."
+    );
+    process.exit(1);
+  }
+
+  // 2. Prompt for which account and time period to fetch data for:
+  const responses = await prompts([
+    {
+      type: "select",
+      name: "period",
+      message: "Select the period to create query for?",
+      choices: getMonthChoices(),
+    },
+    {
+      type: "select",
+      name: "account",
+      message: "Please select which Stripe account to use:",
+      choices: stripeAccounts.sort().map((account) => ({
+        title: account,
+        value: account,
+      })),
+    },
+    {
+      type: "select",
+      name: "action",
+      message: "What would you like to do?",
+      choices: [
+        { title: "Download Invoices", value: "downloadInvoices" },
+        {
+          title: "Fetch Transactions Report",
+          value: "fetchTransactionsReport",
+        },
+      ],
+    },
+  ]);
+
+  if (!responses.account || !responses.period) {
+    console.log("\nInterrupted, okay, bye!");
+    return process.exit(0);
+  }
+
+  console.log(
+    `\nOkay we'll fetch from ${responses.account} for ${formatPeriod(
+      responses.period
+    )}\n`
+  );
+
+  const stripeClient = stripeClients[responses.account];
+
+  if (responses.action === "fetchTransactionsReport") {
+    await fetchBalanceTransactions(stripeClient, responses.period);
+  } else if (responses.action === "downloadInvoices") {
+    await downloadInvoices(stripeClient, responses.account, responses.period);
+  }
 }
 
 main()

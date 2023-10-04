@@ -1,0 +1,20 @@
+{
+  "name": "stripe-connect-invoices",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "op run --env-file=.env -- node index.js"
+  },
+  "keywords": [],
+  "author": "Emelia Smith",
+  "license": "ISC",
+  "dependencies": {
+    "@inquirer/prompts": "^3.1.2",
+    "microinvoice": "^1.0.6",
+    "ora": "^7.0.1",
+    "prompts": "^2.4.2",
+    "stripe": "^13.8.0"
+  }
+}

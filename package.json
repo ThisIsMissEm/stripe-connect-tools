@@ -11,7 +11,6 @@
   "author": "Emelia Smith",
   "license": "ISC",
   "dependencies": {
-    "@inquirer/prompts": "^3.1.2",
     "microinvoice": "^1.0.6",
     "ora": "^7.0.1",
     "prompts": "^2.4.2",

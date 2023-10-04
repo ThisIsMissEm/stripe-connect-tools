@@ -1,8 +1,9 @@
-export function toYYYYMMDDString(date) {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(
-    2,
-    "0"
-  )}-${String(date.getDate()).padStart(2, "0")}`;
+function startDate(year, month) {
+  return new Date(year, month, 1, 0);
+}
+
+function endDate(year, month) {
+  return new Date(year, month, 0, 24);
 }
 
 export function getMonthPeriods() {
@@ -15,37 +16,42 @@ export function getMonthPeriods() {
   if (date.getMonth() == 0) {
     // Add the previous month (December):
     periods.push({
-      start: new Date(year, 0, 1),
-      end: new Date(year, 0, 0),
+      start: startDate(year - 1, -1),
+      end: endDate(year, 0),
     });
   } else {
-    for (let i = 6; i > 0; i--) {
+    // Calculate & add the last 6 months
+    //
+    // Note: I'm not sure if this will work correctly at year
+    // boundaries, but it seems to:
+    for (let i = 6; i >= 0; i--) {
       periods.push({
-        start: new Date(year, date.getMonth() - i - 1, 1),
-        end: new Date(year, date.getMonth() - i, 0),
+        start: startDate(year, date.getMonth() - i - 1),
+        end: endDate(year, date.getMonth() - i),
       });
     }
-
-    // Add the current month:
-    periods.push({
-      start: new Date(year, date.getMonth() - 1, 1),
-      end: new Date(year, date.getMonth(), 0),
-    });
   }
 
   // Add the current month:
   periods.push({
-    start: new Date(year, date.getMonth(), 1),
-    end: new Date(year, date.getMonth() + 1, 0),
+    start: startDate(year, date.getMonth()),
+    end: endDate(year, date.getMonth() + 1),
   });
 
   return periods;
 }
 
+function formatDate(date) {
+  return Intl.DateTimeFormat("en-GB", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "numeric",
+    minute: "numeric",
+  }).format(date);
+}
 export function formatPeriod(period) {
-  return `${Intl.DateTimeFormat("en-GB").format(
-    period.start
-  )} to ${Intl.DateTimeFormat("en-GB").format(period.end)}`;
+  return `${formatDate(period.start)} until ${formatDate(period.end)}`;
 }
 
 export function getMonthChoices() {

@@ -78,6 +78,11 @@ async function main() {
     },
   ]);
 
+  if (!responses.account || !responses.period) {
+    console.log("\nInterrupted, okay, bye!");
+    return process.exit(0);
+  }
+
   console.log(
     `\nOkay we'll fetch from ${responses.account} for ${formatPeriod(
       responses.period
@@ -123,7 +128,7 @@ async function main() {
   for await (const transaction of stripeClient.balanceTransactions.list({
     created: {
       gte: responses.period.start.valueOf() / 1000,
-      lte: responses.period.end.valueOf() / 1000,
+      lt: responses.period.end.valueOf() / 1000,
     },
     expand: ["data.source"],
   })) {

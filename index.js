@@ -190,7 +190,60 @@ async function fetchBalanceTransactions(stripe, period) {
   console.log({ unknownTransactions });
 }
 
-async function downloadInvoices(stripe, accountName, period) {
+async function downloadChargeInvoices(stripe, accountName, period) {
+  const promises = [];
+
+  for await (const charge of stripe.charges.list({
+    created: {
+      gte: period.start.valueOf() / 1000,
+      lt: period.end.valueOf() / 1000,
+    },
+    expand: ["data.customer"],
+  })) {
+    // Skip unsuccessful charges:
+    if (charge.status !== "succeeded") {
+      continue;
+    }
+
+    // Skip any with invoices, as we should capture those from downloadSubscriptionInvoices
+    if (charge.invoice !== null) {
+      continue;
+    }
+
+    console.log(charge);
+
+    // fr-CA produces YYYY-MM-DD format dates:
+    // const formattedDate = Intl.DateTimeFormat("fr-CA", {
+    //   year: "numeric",
+    //   month: "2-digit",
+    //   day: "2-digit",
+    // }).format(new Date(invoice.created * 1000));
+    // Because Ko-fi doesn't collect the darn customer's country:
+    // const country =
+    //   invoice.customer_address?.country ||
+    //   invoice.charge?.billing_details?.address?.country ||
+    //   invoice.charge?.payment_method_details?.card?.country;
+    // const invoiceUrl = invoice.invoice_pdf;
+    // const invoiceFilename = `${formattedDate}-${accountName}-${invoice.number}-${country}.pdf`;
+    // const invoicePdf = await fetch(invoiceUrl, { redirect: "follow" });
+    // if (
+    //   !invoicePdf.ok ||
+    //   !invoicePdf.body ||
+    //   invoicePdf.headers.get("Content-Type") !== "application/octet-stream"
+    // ) {
+    //   console.error(`Could not download invoice PDF: ${invoice.id}`);
+    //   console.error(invoicePdf);
+    //   continue;
+    // }
+    // const destination = joinPath(process.cwd(), "downloads", invoiceFilename);
+    // const fileStream = createWriteStream(destination, { flags: "wx" });
+    // promises.push(finished(Readable.fromWeb(invoicePdf.body).pipe(fileStream)));
+  }
+
+  // await Promise.allSettled(promises);
+}
+
+async function downloadSubscriptionInvoices(stripe, accountName, period) {
   const promises = [];
 
   for await (const invoice of stripe.invoices.list({
@@ -272,7 +325,11 @@ async function main() {
       name: "action",
       message: "What would you like to do?",
       choices: [
-        { title: "Download Invoices", value: "downloadInvoices" },
+        { title: "Download Invoices", value: "downloadSubscriptionInvoices" },
+        {
+          title: "Download Charge (Donation) Invoices",
+          value: "downloadChargeInvoices",
+        },
         {
           title: "Fetch Transactions Report",
           value: "fetchTransactionsReport",
@@ -296,8 +353,18 @@ async function main() {
 
   if (responses.action === "fetchTransactionsReport") {
     await fetchBalanceTransactions(stripeClient, responses.period);
-  } else if (responses.action === "downloadInvoices") {
-    await downloadInvoices(stripeClient, responses.account, responses.period);
+  } else if (responses.action === "downloadSubscriptionInvoices") {
+    await downloadSubscriptionInvoices(
+      stripeClient,
+      responses.account,
+      responses.period
+    );
+  } else if (responses.action === "downloadChargeInvoices") {
+    await downloadChargeInvoices(
+      stripeClient,
+      responses.account,
+      responses.period
+    );
   }
 }
 

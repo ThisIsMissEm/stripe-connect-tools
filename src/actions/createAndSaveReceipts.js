@@ -108,14 +108,14 @@ async function createAndSaveReceipt(
           price: true,
         },
         {
-          label: "Total",
+          label: "Total Paid",
           value: charge.invoice.total,
           price: true,
         },
       ]
     : [
         {
-          label: "Total",
+          label: "Total Paid",
           value: charge.invoice.total,
           price: true,
         },

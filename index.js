@@ -2,6 +2,7 @@ import Stripe from "stripe";
 import prompts from "prompts";
 import { createWriteStream } from "node:fs";
 import { writeFile } from "node:fs/promises";
+import { mkdirp } from "fs-extra";
 import { Readable } from "node:stream";
 import { finished } from "node:stream/promises";
 import { join as joinPath } from "node:path";
@@ -220,38 +221,40 @@ function getTaxLaw(config) {
   return TAX_LAWS[country];
 }
 
-function createReceipt(charge, receiptNumber, isSmallInvoice, config) {
-  const customerAddress = (
-    isSmallInvoice
-      ? [charge.billing_details.name, charge.billing_details.address.country]
-      : [
-          charge.billing_details.name,
-          charge.billing_details.address.line1,
-          charge.billing_details.address.line2,
-          `${charge.billing_details.address.postal_code} ${charge.billing_details.address.city}`.trim(),
-          charge.billing_details.address.state,
-          charge.billing_details.address.country,
-        ]
-  ).filter((v) => !!v);
+function getAddresses(billing_details, business) {
+  const customerAddress = [
+    billing_details.name ?? billing_details.email,
+    billing_details.address.line1,
+    billing_details.address.line2,
+    `${billing_details.address.postal_code ?? ""} ${
+      billing_details.address.city ?? ""
+    }`.trim(),
+    billing_details.address.state,
+    billing_details.address.country,
+  ].filter((v) => !!v);
 
-  const businessDetails = [
-    config.business.address_line_1,
-    config.business.address_line_2,
-    `${config.business.postal_code} ${config.business.city}`.trim(),
-    config.business.state,
-    config.business.country,
+  const businessAddress = [
+    business.address_line_1,
+    business.address_line_2,
+    `${business.postal_code} ${business.city}`.trim(),
+    business.state,
+    business.country,
     "\n",
   ].filter((v) => !!v);
 
   // Ensure the customer email ends up on the same line as the business email:
   let customerAddressEmptyLines =
-    businessDetails.length - customerAddress.length;
+    businessAddress.length - customerAddress.length;
 
   while (customerAddressEmptyLines--) {
     customerAddress.push("\n");
   }
 
-  const invoice = new Invoice({
+  return { customerAddress, businessAddress };
+}
+
+function createReceipt(charge, receiptNumber) {
+  return new Invoice({
     data: {
       invoice: {
         name: "Receipt",
@@ -274,33 +277,6 @@ function createReceipt(charge, receiptNumber, isSmallInvoice, config) {
 
         currency: charge.currency.toUpperCase(),
 
-        customer: [
-          {
-            label: "Customer",
-            value: customerAddress,
-          },
-          {
-            label: "Email Address",
-            value: charge.billing_details.email,
-          },
-          // TODO: VAT Info if necessary
-        ],
-
-        seller: [
-          {
-            label: config.business.name,
-            value: businessDetails,
-          },
-          {
-            label: "Tax Identifier",
-            value: config.business.tax_identifier,
-          },
-          // {
-          //   label: "Email Address",
-          //   value: config.business.email,
-          // },
-        ],
-
         details: {
           header: [
             {
@@ -317,23 +293,33 @@ function createReceipt(charge, receiptNumber, isSmallInvoice, config) {
       },
     },
   });
-
-  return invoice;
 }
 
 // @ts-ignore
-async function createAndSaveInvoice(charge, receiptNumber, config) {
-  debug("createAndSaveInvoice", charge);
+async function createAndSaveReceipt(
+  charge,
+  { receiptNumber, receiptDir },
+  config
+) {
+  debug("createAndSaveReceipt", charge);
+
   const taxLaw = getTaxLaw(config);
-  const isSmallInvoice =
-    charge.amount < taxLaw.smallInvoiceLimit && charge.currency === "eur";
+  // const isSmallInvoice =
+  //   charge.amount < taxLaw.smallInvoiceLimit && charge.currency === "eur";
+
+  // TODO: Validate if this is correct; I'm not sure as I currently don't charge VAT.
   const hasTax = charge.invoice.total !== charge.invoice.total_excluding_tax;
 
   const totals = hasTax
     ? [
         {
-          label: "Total (ex. Tax)",
+          label: "Subtotal",
           value: charge.invoice.total_excluding_tax,
+          price: true,
+        },
+        {
+          label: "VAT",
+          value: charge.invoice.total - charge.invoice.total_excluding_tax,
           price: true,
         },
         {
@@ -357,11 +343,8 @@ async function createAndSaveInvoice(charge, receiptNumber, config) {
       weight: "bold",
       color: "primary",
     });
-    legal.push({
-      value: " ",
-      weight: "bold",
-      color: "primary",
-    });
+    // Additional new line:
+    legal.push({ value: " " });
   }
 
   if (charge.invoice.id) {
@@ -377,37 +360,59 @@ async function createAndSaveInvoice(charge, receiptNumber, config) {
     });
   }
 
-  const invoice = createReceipt(charge, receiptNumber, isSmallInvoice, config);
+  const { businessAddress, customerAddress } = getAddresses(
+    charge.billing_details,
+    config.business
+  );
 
-  const pdf = await invoice.generate({
-    legal,
-    lineItems: charge.invoice.lines.map((lineItem) => {
-      return [
-        {
-          value: lineItem.description.replaceAll("€", "€ "),
-          subtext:
-            lineItem.period.start !== lineItem.period.end
-              ? // @ts-ignore
-                formatPeriod(lineItem.period, true)
-              : "",
-        },
-        {
-          value: 1,
-        },
-        {
-          value: lineItem.amount,
-          price: true,
-        },
-      ];
-    }),
-    totals,
-  });
-
-  const file = await temporaryFile({
-    extension: "pdf",
-  });
-  await writeFile(file, pdf);
-  console.log(file);
+  return createReceipt(charge, receiptNumber)
+    .setBusiness([
+      {
+        label: config.business.name,
+        value: businessAddress,
+      },
+      {
+        label: "Tax Identifier",
+        value: config.business.tax_identifier,
+      },
+    ])
+    .setCustomer([
+      {
+        label: "Customer",
+        value: customerAddress,
+      },
+      {
+        label: "Email Address",
+        value: charge.billing_details.email,
+      },
+      // TODO: VAT Info if necessary
+    ])
+    .generate({
+      legal,
+      lineItems: charge.invoice.lines.map((lineItem) => {
+        return [
+          {
+            // We add a space after the € sign as otherwise it makes the text hard to read:
+            value: lineItem.description.replaceAll("€", "€ "),
+            subtext:
+              lineItem.period.start !== lineItem.period.end
+                ? formatPeriod(lineItem.period, true)
+                : "",
+          },
+          {
+            value: 1,
+          },
+          {
+            value: lineItem.amount,
+            price: true,
+          },
+        ];
+      }),
+      totals,
+    })
+    .then((pdf) => {
+      return writeFile(joinPath(receiptDir, `${receiptNumber}.pdf`), pdf);
+    });
 }
 
 // @ts-ignore
@@ -749,7 +754,8 @@ async function main() {
     )}\n`
   );
 
-  const stripe = stripeClients[responses.account];
+  const accountName = responses.account;
+  const stripe = stripeClients[accountName];
   const account = await stripe.accounts.retrieve();
 
   // @ts-ignore
@@ -762,17 +768,33 @@ async function main() {
       responses.period
     );
 
-    let counter = 0;
-    for (let charge of result.charges) {
-      await createAndSaveInvoice(
+    // Ensure the output directory exists:
+    const receiptDir = joinPath(process.cwd(), "receipts");
+    await mkdirp(receiptDir);
+
+    // For each charge, create a receipt:
+    const receipts = result.charges.map((charge, index) => {
+      const receiptDate = Intl.DateTimeFormat("fr-CA", {
+        year: "numeric",
+        month: "2-digit",
+      }).format(charge.created);
+
+      const receiptNumber = `${responses.account.toUpperCase()}-${receiptDate}-${String(
+        index + 1
+      ).padStart(4, "0")}`;
+
+      return createAndSaveReceipt(
         charge,
-        `${charge.created.getFullYear()}-${String(
-          charge.created.getMonth() + 1
-        ).padStart(2, "0")}-${String(++counter).padStart(4, "0")}`,
+        {
+          receiptDir,
+          receiptNumber,
+        },
         config
       );
-      break;
-    }
+    });
+
+    await Promise.all(receipts);
+
     // @ts-ignore
   } else if (responses.action === "downloadSubscriptionInvoices") {
     await downloadSubscriptionInvoices(

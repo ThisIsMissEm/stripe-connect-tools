@@ -15,6 +15,7 @@
     "convict": "^6.2.4",
     "convict-format-with-validator": "^6.2.0",
     "countries-list": "^3.0.5",
+    "fs-extra": "^11.1.1",
     "get-stream": "^8.0.1",
     "lodash.defaults": "^4.2.0",
     "ora": "^7.0.1",

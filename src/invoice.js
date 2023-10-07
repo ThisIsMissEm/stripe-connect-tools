@@ -261,7 +261,7 @@ export default class Invoice {
    * @private
    * @return void
    */
-  generateDetails(type) {
+  generateDetails(entity, type) {
     let _maxWidth = 250;
     let _fontMargin = 4;
 
@@ -274,7 +274,7 @@ export default class Invoice {
       this.setCursor("x", this.options.style.header.textPosition);
     }
 
-    this.options.data.invoice[type].forEach((line) => {
+    entity.forEach((line) => {
       this.setText(line.label != " " ? `${line.label}:` : " ", {
         colorCode: "primary",
         fontWeight: "bold",
@@ -364,6 +364,7 @@ export default class Invoice {
         skipDown: true,
       });
 
+      // Handles adding additional details to a line item (e.g., subscription period)
       if (!!column.subtext) {
         const prevY = this.storage.cursor.y;
         this.storage.cursor.y += this.options.style.text.regularSize * 1.25;
@@ -389,10 +390,7 @@ export default class Invoice {
 
     // Set y to the max y position
     this.setCursor("y", _maxY + extraY);
-
-    // if (type === "header") {
     this.generateLine();
-    // }
   }
 
   /**
@@ -428,9 +426,6 @@ export default class Invoice {
       this.storage.customer.height,
       this.storage.seller.height
     );
-
-    let _fontMargin = 4;
-    let _leftMargin = 15;
 
     this.setCursor("y", _startY);
 
@@ -591,6 +586,16 @@ export default class Invoice {
     }
   }
 
+  setCustomer(customer) {
+    this.customer = customer;
+    return this;
+  }
+
+  setBusiness(business) {
+    this.business = business;
+    return this;
+  }
+
   /**
    * Generates a PDF invoide
    *
@@ -601,8 +606,8 @@ export default class Invoice {
   generate({ lineItems, totals, legal }) {
     // this.loadCustomFonts();
     this.generateHeader();
-    this.generateDetails("customer");
-    this.generateDetails("seller");
+    this.generateDetails(this.customer, "customer");
+    this.generateDetails(this.business, "seller");
     this.generateLineItems(lineItems);
     this.generateTotals(totals);
     this.generateLegal(legal ?? []);

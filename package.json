@@ -22,7 +22,6 @@
     "pdfkit": "^0.13.0",
     "prettyjson": "^1.2.5",
     "prompts": "^2.4.2",
-    "stripe": "^13.8.0",
-    "tempy": "^3.1.0"
+    "stripe": "^13.8.0"
   }
 }

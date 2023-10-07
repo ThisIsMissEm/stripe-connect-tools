@@ -41,17 +41,25 @@ export function getMonthPeriods() {
   return periods;
 }
 
-function formatDate(date) {
-  return Intl.DateTimeFormat("en-GB", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "numeric",
-    minute: "numeric",
-  }).format(date);
+export function formatDate(date, longDate) {
+  return Intl.DateTimeFormat(
+    "en-GB",
+    longDate
+      ? { dateStyle: "long" }
+      : {
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit",
+          hour: "numeric",
+          minute: "numeric",
+        }
+  ).format(date);
 }
-export function formatPeriod(period) {
-  return `${formatDate(period.start)} until ${formatDate(period.end)}`;
+export function formatPeriod(period, longDate) {
+  return `${formatDate(period.start, !!longDate)} until ${formatDate(
+    period.end,
+    !!longDate
+  )}`;
 }
 
 export function getMonthChoices() {

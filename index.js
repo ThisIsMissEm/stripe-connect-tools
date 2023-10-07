@@ -1,12 +1,18 @@
 import Stripe from "stripe";
 import prompts from "prompts";
-import ora from "ora";
 import { createWriteStream } from "node:fs";
+import { writeFile } from "node:fs/promises";
 import { Readable } from "node:stream";
 import { finished } from "node:stream/promises";
 import { join as joinPath } from "node:path";
+import { getCountryData } from "countries-list";
+import { render } from "prettyjson";
 
-import { getMonthChoices, formatPeriod } from "./src/date-fns.js";
+import { temporaryFile } from "tempy";
+
+import configuration from "./src/configuration.js";
+import { getMonthChoices, formatPeriod, formatDate } from "./src/date-fns.js";
+import Invoice from "./src/invoice.js";
 
 function getStripeClients() {
   const clients = {};
@@ -51,13 +57,366 @@ function getStripeClients() {
 //     yield* balanceTransactions(client, period, transactions.data.at(-1).id);
 //   }
 // }
+function debug(type, object) {
+  console.log(`\n\n${type}:\n${render(object)}\n\n`);
+}
 
-async function fetchBalanceTransactions(stripe, period) {
-  const spinner = ora({
-    text: "Fetching transactions...",
-    spinner: "bouncingBar",
-    color: "yellow",
-  }).start();
+function processCharge(transaction) {
+  const txCharge = transaction.source;
+
+  const errors = [];
+  const charge = {
+    transaction_id: transaction.id,
+    id: txCharge.id,
+    amount: transaction.amount,
+    net: transaction.net,
+    fee: transaction.fee,
+    currency: transaction.currency,
+    exchange_rate: transaction.exchange_rate ?? 1,
+    description:
+      txCharge.description ??
+      txCharge.statement_descriptor ??
+      txCharge.calculated_statement_descriptor,
+    created: new Date(transaction.created * 1000),
+    available_on: new Date(transaction.available_on * 1000),
+    metadata: txCharge.metadata,
+    payment_method: txCharge.payment_method_details,
+    billing_details: txCharge.billing_details,
+    invoice: txCharge.invoice
+      ? {
+          id: txCharge.invoice.id,
+          number: txCharge.invoice.number,
+          invoice_pdf: txCharge.invoice.invoice_pdf,
+          // effective_at: txCharge.invoice.effective_at,
+          // period_end: txCharge.invoice.period_end,
+          // period_start: txCharge.invoice.period_start,
+          lines: txCharge.invoice.lines.data.map((line) => {
+            return {
+              id: line.id,
+              amount: line.amount,
+              currency: line.currency,
+              description: line.description,
+              period: {
+                start: line.period?.start && new Date(line.period.start * 1000),
+                end: line.period?.end && new Date(line.period.end * 1000),
+              },
+              type: line.type,
+            };
+          }),
+          total: txCharge.invoice.total,
+          total_excluding_tax: txCharge.invoice.total_excluding_tax,
+          total_tax_amounts: txCharge.invoice.total_tax_amounts,
+        }
+      : null,
+    customer: txCharge.customer
+      ? {
+          id: txCharge.customer.id,
+          email: txCharge.customer.email,
+          name: txCharge.customer.name,
+          address: txCharge.customer.address,
+        }
+      : null,
+  };
+
+  // Remove stripe internal data:
+  if (charge.metadata?.PageId) {
+    delete charge.metadata.PageId;
+  }
+
+  if (charge.billing_details?.email === null) {
+    if (charge.customer?.email) {
+      charge.billing_details.email = charge.customer.email;
+    } else if (charge.metadata?.recipient_email) {
+      charge.billing_details.email = charge.metadata.recipient_email;
+    }
+  }
+
+  if (charge.billing_details?.address?.country) {
+    const country = getCountryData(charge.billing_details.address.country);
+    charge.billing_details.address.country = country.name;
+  }
+
+  if (!charge.invoice) {
+    charge.invoice = {
+      id: null,
+      number: transaction.receipt_number,
+      invoice_pdf: null,
+      total: transaction.amount,
+      total_excluding_tax: transaction.amount,
+      total_tax_amounts: [],
+      lines: [
+        {
+          id: null,
+          amount: transaction.amount,
+          currency: transaction.currency,
+          description: charge.description,
+          quantity: 1,
+          period: {
+            start: charge.created,
+            end: charge.created,
+          },
+          type: "invoiceitem",
+        },
+      ],
+    };
+  }
+
+  if (transaction.source?.payment_method_details) {
+    const payment_method_type = transaction.source.payment_method_details.type;
+    const payment_method =
+      transaction.source.payment_method_details[payment_method_type];
+
+    if (payment_method_type === "card") {
+      charge.payment_method = {
+        exp_year: payment_method.exp_year,
+        exp_month: payment_method.exp_month,
+        network: payment_method.network,
+        last4: payment_method.last4,
+      };
+
+      if (
+        charge.billing_details.address &&
+        !charge.billing_details.address.country
+      ) {
+        const country = getCountryData(payment_method.country);
+        charge.billing_details.address.country = country.name;
+      }
+    } else {
+      errors.push({
+        error: `unhandled payment method: ${payment_method_type}`,
+        payment_method,
+      });
+    }
+  }
+
+  return { charge, errors };
+}
+
+const TAX_LAWS = {
+  germany: {
+    smallInvoiceLimit: 25000,
+    smallBusinessStatement:
+      "In accordance with Section 19 UStG, this invoice does not include VAT.",
+  },
+};
+
+function validateTaxLaw(config) {
+  const country = config.business.country.toLowerCase();
+  if (!TAX_LAWS.hasOwnProperty(country)) {
+    console.error(
+      `This tool currently only supports the following tax laws:\n${Object.keys(
+        TAX_LAWS
+      )
+        .map((country) => ` - ${country}`)
+        .join("\n")}\n`
+    );
+
+    process.exit(1);
+  }
+}
+
+function getTaxLaw(config) {
+  const country = config.business.country.toLowerCase();
+  return TAX_LAWS[country];
+}
+
+function createReceipt(charge, receiptNumber, isSmallInvoice, config) {
+  const customerAddress = (
+    isSmallInvoice
+      ? [charge.billing_details.name, charge.billing_details.address.country]
+      : [
+          charge.billing_details.name,
+          charge.billing_details.address.line1,
+          charge.billing_details.address.line2,
+          `${charge.billing_details.address.postal_code} ${charge.billing_details.address.city}`.trim(),
+          charge.billing_details.address.state,
+          charge.billing_details.address.country,
+        ]
+  ).filter((v) => !!v);
+
+  const businessDetails = [
+    config.business.address_line_1,
+    config.business.address_line_2,
+    `${config.business.postal_code} ${config.business.city}`.trim(),
+    config.business.state,
+    config.business.country,
+    "\n",
+  ].filter((v) => !!v);
+
+  // Ensure the customer email ends up on the same line as the business email:
+  let customerAddressEmptyLines =
+    businessDetails.length - customerAddress.length;
+
+  while (customerAddressEmptyLines--) {
+    customerAddress.push("\n");
+  }
+
+  const invoice = new Invoice({
+    data: {
+      invoice: {
+        name: "Receipt",
+        header: [
+          {
+            label: "Receipt Number",
+            value: receiptNumber,
+          },
+          {
+            label: "Issue Date",
+            // @ts-ignore
+            value: formatDate(charge.created, true),
+          },
+          {
+            label: "Due Date",
+            // @ts-ignore
+            value: formatDate(charge.created, true),
+          },
+        ],
+
+        currency: charge.currency.toUpperCase(),
+
+        customer: [
+          {
+            label: "Customer",
+            value: customerAddress,
+          },
+          {
+            label: "Email Address",
+            value: charge.billing_details.email,
+          },
+          // TODO: VAT Info if necessary
+        ],
+
+        seller: [
+          {
+            label: config.business.name,
+            value: businessDetails,
+          },
+          {
+            label: "Tax Identifier",
+            value: config.business.tax_identifier,
+          },
+          // {
+          //   label: "Email Address",
+          //   value: config.business.email,
+          // },
+        ],
+
+        details: {
+          header: [
+            {
+              value: "Description",
+            },
+            {
+              value: "Quantity",
+            },
+            {
+              value: "Amount",
+            },
+          ],
+        },
+      },
+    },
+  });
+
+  return invoice;
+}
+
+// @ts-ignore
+async function createAndSaveInvoice(charge, receiptNumber, config) {
+  debug("createAndSaveInvoice", charge);
+  const taxLaw = getTaxLaw(config);
+  const isSmallInvoice =
+    charge.amount < taxLaw.smallInvoiceLimit && charge.currency === "eur";
+  const hasTax = charge.invoice.total !== charge.invoice.total_excluding_tax;
+
+  const totals = hasTax
+    ? [
+        {
+          label: "Total (ex. Tax)",
+          value: charge.invoice.total_excluding_tax,
+          price: true,
+        },
+        {
+          label: "Total",
+          value: charge.invoice.total,
+          price: true,
+        },
+      ]
+    : [
+        {
+          label: "Total",
+          value: charge.invoice.total,
+          price: true,
+        },
+      ];
+
+  const legal = [];
+  if (!hasTax) {
+    legal.push({
+      value: taxLaw.smallBusinessStatement,
+      weight: "bold",
+      color: "primary",
+    });
+    legal.push({
+      value: " ",
+      weight: "bold",
+      color: "primary",
+    });
+  }
+
+  if (charge.invoice.id) {
+    legal.push({
+      value: `Invoice Reference: ${charge.invoice.id}`,
+      weight: "normal",
+      color: "primary",
+    });
+    legal.push({
+      value: `To request a copy of the invoice, please email: ${config.business.email}`,
+      weight: "normal",
+      color: "primary",
+    });
+  }
+
+  const invoice = createReceipt(charge, receiptNumber, isSmallInvoice, config);
+
+  const pdf = await invoice.generate({
+    legal,
+    lineItems: charge.invoice.lines.map((lineItem) => {
+      return [
+        {
+          value: lineItem.description.replaceAll("€", "€ "),
+          subtext:
+            lineItem.period.start !== lineItem.period.end
+              ? // @ts-ignore
+                formatPeriod(lineItem.period, true)
+              : "",
+        },
+        {
+          value: 1,
+        },
+        {
+          value: lineItem.amount,
+          price: true,
+        },
+      ];
+    }),
+    totals,
+  });
+
+  const file = await temporaryFile({
+    extension: "pdf",
+  });
+  await writeFile(file, pdf);
+  console.log(file);
+}
+
+// @ts-ignore
+async function fetchBalanceTransactions(stripe, account, period) {
+  // const spinner = ora({
+  //   text: "Fetching transactions...",
+  //   spinner: "bouncingBar",
+  //   color: "yellow",
+  // }).start();
 
   const taxesAndFees = {
     tax: [],
@@ -65,13 +424,15 @@ async function fetchBalanceTransactions(stripe, period) {
     application_fee: [],
   };
 
+  const rawTransactions = [];
   const unknownTransactions = [];
 
   const payouts = [];
-  const transactions = [];
   const charges = [];
 
   const totals = {
+    errors: 0,
+    unavailable_transactions: 0,
     pending_transactions: 0,
     payouts_gross: 0,
     payouts_net: 0,
@@ -85,15 +446,25 @@ async function fetchBalanceTransactions(stripe, period) {
     charge_tax_fees: 0,
   };
 
-  const knownTransactionTypes = ["charge", "payout", "stripe_fee"];
+  const knownTransactionTypes = ["charge", "payout", "stripe_fee", "payment"];
 
   for await (const transaction of stripe.balanceTransactions.list({
     created: {
       gte: period.start.valueOf() / 1000,
       lt: period.end.valueOf() / 1000,
     },
-    expand: ["data.source"],
+    expand: [
+      // basic data for all balance transactions:
+      "data.source",
+      // data for charges:
+      "data.source.customer",
+      "data.source.invoice",
+      // data for payouts:
+      "data.source.destination",
+    ],
   })) {
+    rawTransactions.push(transaction);
+
     // ignore pending transactions, but record a count:
     if (transaction.status === "pending") {
       totals.pending_transactions++;
@@ -102,18 +473,20 @@ async function fetchBalanceTransactions(stripe, period) {
 
     // ignore other transaction status, but log:
     if (transaction.status !== "available") {
-      console.error(transaction);
+      totals.unavailable_transactions++;
       continue;
     }
 
     // Log for unhandled transaction types:
     if (!knownTransactionTypes.includes(transaction.type)) {
-      spinner.warn(
+      console.warn(
         `Unknown transaction type: ${transaction.type}, id: ${transaction.id}`
       );
       unknownTransactions.push(transaction);
       continue;
     }
+
+    // debug(transaction);
 
     // Calculate data:
     if (transaction.type === "stripe_fee") {
@@ -139,6 +512,11 @@ async function fetchBalanceTransactions(stripe, period) {
       });
     }
 
+    // TODO: Implement payment type:
+    if (transaction.type === "payment") {
+      // debug("transaction", transaction);
+    }
+
     if (transaction.type === "charge") {
       // Calculate individual fee type totals:
       transaction.fee_details.forEach((fee) => {
@@ -161,36 +539,52 @@ async function fetchBalanceTransactions(stripe, period) {
         });
       });
 
-      charges.push({
-        transaction_id: transaction.id,
-        id: transaction.source.id,
-        amount: transaction.amount,
-        fee: transaction.fee,
-        currency: transaction.currency,
-        created: new Date(transaction.created * 1000),
-        available_on: new Date(transaction.available_on * 1000),
-        metadata: transaction.source.metadata,
-        payment_method: transaction.source.payment_method_details,
-        billing_details: transaction.source.billing_details,
-      });
+      try {
+        const { charge, errors } = processCharge(transaction);
+
+        if (errors.length) {
+          console.error(errors);
+        }
+        // debug("charge", charge);
+
+        charges.push(charge);
+      } catch (err) {
+        console.error(err);
+        // debug("transaction", transaction);
+      }
 
       totals.charge_fees += transaction.fee;
       totals.charge_gross += transaction.amount;
       totals.charge_net += transaction.net;
     }
-
-    transactions.push(transaction);
   }
 
-  spinner.succeed();
-  console.log("\n");
-  console.log(taxesAndFees);
-  console.log(totals);
+  // console.log("\n\n\n-------------------------------------\n\n\n");
 
-  console.log({ unknownTransactions });
+  // console.log(JSON.stringify(rawTransactions, null, 2));
+
+  // spinner.succeed();
+  // console.log("\n");
+  // console.log(taxesAndFees);
+  // console.log(totals);
+
+  // console.log(charges);
+
+  // console.log({ unknownTransactions });
+
+  return {
+    rawTransactions,
+    unknownTransactions,
+    totals,
+    taxesAndFees,
+    payouts,
+    charges,
+  };
 }
 
+// @ts-ignore
 async function downloadChargeInvoices(stripe, accountName, period) {
+  // @ts-ignore
   const promises = [];
 
   for await (const charge of stripe.charges.list({
@@ -286,6 +680,7 @@ async function downloadSubscriptionInvoices(stripe, accountName, period) {
     const destination = joinPath(process.cwd(), "downloads", invoiceFilename);
 
     const fileStream = createWriteStream(destination, { flags: "wx" });
+    // @ts-ignore
     promises.push(finished(Readable.fromWeb(invoicePdf.body).pipe(fileStream)));
   }
 
@@ -295,6 +690,7 @@ async function downloadSubscriptionInvoices(stripe, accountName, period) {
 async function main() {
   // 1. Fetch all STRIPE_TOKEN_XXXX environment variables
   const [stripeClients, stripeAccounts] = getStripeClients();
+  const config = configuration.getProperties();
 
   if (stripeAccounts.length < 1) {
     console.log(
@@ -320,22 +716,22 @@ async function main() {
         value: account,
       })),
     },
-    {
-      type: "select",
-      name: "action",
-      message: "What would you like to do?",
-      choices: [
-        { title: "Download Invoices", value: "downloadSubscriptionInvoices" },
-        {
-          title: "Download Charge (Donation) Invoices",
-          value: "downloadChargeInvoices",
-        },
-        {
-          title: "Fetch Transactions Report",
-          value: "fetchTransactionsReport",
-        },
-      ],
-    },
+    // {
+    //   type: "select",
+    //   name: "action",
+    //   message: "What would you like to do?",
+    //   choices: [
+    //     { title: "Download Invoices", value: "downloadSubscriptionInvoices" },
+    //     {
+    //       title: "Download Charge (Donation) Invoices",
+    //       value: "downloadChargeInvoices",
+    //     },
+    //     {
+    //       title: "Fetch Transactions Report",
+    //       value: "fetchTransactionsReport",
+    //     },
+    //   ],
+    // },
   ]);
 
   if (!responses.account || !responses.period) {
@@ -343,28 +739,50 @@ async function main() {
     return process.exit(0);
   }
 
+  // Force this action:
+  // @ts-ignore
+  responses.action = "createAndSaveInvoices";
+
   console.log(
     `\nOkay we'll fetch from ${responses.account} for ${formatPeriod(
       responses.period
     )}\n`
   );
 
-  const stripeClient = stripeClients[responses.account];
+  const stripe = stripeClients[responses.account];
+  const account = await stripe.accounts.retrieve();
 
-  if (responses.action === "fetchTransactionsReport") {
-    await fetchBalanceTransactions(stripeClient, responses.period);
+  // @ts-ignore
+  if (responses.action === "createAndSaveInvoices") {
+    validateTaxLaw(config);
+
+    const result = await fetchBalanceTransactions(
+      stripe,
+      account,
+      responses.period
+    );
+
+    let counter = 0;
+    for (let charge of result.charges) {
+      await createAndSaveInvoice(
+        charge,
+        `${charge.created.getFullYear()}-${String(
+          charge.created.getMonth() + 1
+        ).padStart(2, "0")}-${String(++counter).padStart(4, "0")}`,
+        config
+      );
+      break;
+    }
+    // @ts-ignore
   } else if (responses.action === "downloadSubscriptionInvoices") {
     await downloadSubscriptionInvoices(
-      stripeClient,
+      stripe,
       responses.account,
       responses.period
     );
+    // @ts-ignore
   } else if (responses.action === "downloadChargeInvoices") {
-    await downloadChargeInvoices(
-      stripeClient,
-      responses.account,
-      responses.period
-    );
+    await downloadChargeInvoices(stripe, responses.account, responses.period);
   }
 }
 

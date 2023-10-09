@@ -51,11 +51,11 @@ function createReceipt(charge, receiptNumber) {
             value: receiptNumber,
           },
           {
-            label: "Issue Date",
-            value: formatDate(charge.created, true),
+            label: "Charge ID",
+            value: charge.id,
           },
           {
-            label: "Due Date",
+            label: "Charge Date",
             value: formatDate(charge.created, true),
           },
         ],

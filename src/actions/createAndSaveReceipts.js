@@ -207,32 +207,43 @@ export default async function createAndSaveReceipts(
 ) {
   validateTaxLaw(config);
 
-  const result = await fetchBalanceTransactions(stripe, period);
+  const results = await fetchBalanceTransactions(stripe, period);
 
   // Ensure the output directory exists:
   const receiptDir = joinPath(process.cwd(), "receipts");
   await mkdirp(receiptDir);
 
   // For each charge, create a receipt:
-  const receipts = result.charges.map((charge, index) => {
-    const receiptDate = Intl.DateTimeFormat("fr-CA", {
-      year: "numeric",
-      month: "2-digit",
-    }).format(charge.created);
+  const receipts = results.charges
+    // Stripe returns reverse chronological, resulting in incorrect receipt numbers
+    .sort((a, b) => {
+      if (a.created < b.created) {
+        return -1;
+      } else if (a.created > b.created) {
+        return 1;
+      } else {
+        return 0;
+      }
+    })
+    .map((charge, index) => {
+      const receiptDate = Intl.DateTimeFormat("fr-CA", {
+        year: "numeric",
+        month: "2-digit",
+      }).format(charge.created);
 
-    const receiptNumber = `${account.toUpperCase()}-${receiptDate}-${String(
-      index + 1
-    ).padStart(4, "0")}`;
+      const receiptNumber = `${account.toUpperCase()}-${receiptDate}-${String(
+        index + 1
+      ).padStart(4, "0")}`;
 
-    return createAndSaveReceipt(
-      charge,
-      {
-        receiptDir,
-        receiptNumber,
-      },
-      config
-    );
-  });
+      return createAndSaveReceipt(
+        charge,
+        {
+          receiptDir,
+          receiptNumber,
+        },
+        config
+      );
+    });
 
   await Promise.all(receipts);
 }

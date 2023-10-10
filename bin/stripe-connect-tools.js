@@ -1,11 +1,11 @@
 import prompts from "prompts";
 
-import configuration from "./src/configuration.js";
-import { getMonthChoices, formatPeriod } from "./src/date-fns.js";
-import { getStripeClients } from "./src/stripe.js";
+import configuration from "../src/configuration.js";
+import { getMonthChoices, formatPeriod } from "../src/date-fns.js";
+import { getStripeClients } from "../src/stripe.js";
 
-import downloadSubscriptionInvoices from "./src/actions/downloadSubscriptionInvoices.js";
-import createAndSaveReceipts from "./src/actions/createAndSaveReceipts.js";
+import downloadSubscriptionInvoices from "../src/actions/downloadSubscriptionInvoices.js";
+import createAndSaveReceipts from "../src/actions/createAndSaveReceipts.js";
 
 async function main() {
   // 1. Fetch all STRIPE_TOKEN_XXXX environment variables

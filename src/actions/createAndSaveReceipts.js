@@ -11,13 +11,13 @@ import { debug } from "../utils.js";
 function getAddresses(billing_details, business) {
   const customerAddress = [
     billing_details.name ?? billing_details.email,
-    billing_details.address.line1,
-    billing_details.address.line2,
-    `${billing_details.address.postal_code ?? ""} ${
-      billing_details.address.city ?? ""
+    billing_details.address?.line1,
+    billing_details.address?.line2,
+    `${billing_details.address?.postal_code ?? ""} ${
+      billing_details.address?.city ?? ""
     }`.trim(),
-    billing_details.address.state,
-    billing_details.address.country,
+    billing_details.address?.state,
+    billing_details.address?.country,
   ].filter((v) => !!v);
 
   const businessAddress = [

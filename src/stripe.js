@@ -30,8 +30,9 @@ function processCharge(transaction) {
 
   const errors = [];
   const charge = {
+    type: "charge",
     transaction_id: transaction.id,
-    id: txCharge.id,
+    id: sourceId(transaction),
     amount: transaction.amount,
     net: transaction.net,
     fee: transaction.fee,
@@ -75,8 +76,8 @@ function processCharge(transaction) {
     customer: txCharge.customer
       ? {
           id: txCharge.customer.id,
-          email: txCharge.customer.email,
-          name: txCharge.customer.name,
+          email: txCharge.customer.email ?? txCharge.billing_details.email,
+          name: txCharge.customer.name ?? txCharge.billing_details.name,
           address: txCharge.customer.address,
         }
       : null,
@@ -98,6 +99,15 @@ function processCharge(transaction) {
   if (charge.billing_details?.address?.country) {
     const country = getCountryData(charge.billing_details.address.country);
     charge.billing_details.address.country = country.name;
+  }
+
+  if (charge.customer === null) {
+    charge.customer = {
+      id: null,
+      name: charge.billing_details.name,
+      email: charge.billing_details.email,
+      address: {},
+    };
   }
 
   if (!charge.invoice) {
@@ -163,18 +173,97 @@ export const knownTransactionTypes = [
   "payment",
 ];
 
-export async function fetchBalanceTransactions(stripe, period) {
-  const taxesAndFees = {
-    tax: [],
-    stripe_fee: [],
-    application_fee: [],
+const feeTypeMap = {
+  application_fee: "application_fees",
+  stripe_fee: "stripe_fees",
+  tax: "taxes",
+};
+
+function sourceId(transaction) {
+  if (typeof transaction.source === "object" && transaction.source !== null) {
+    return transaction.source.id;
+  } else {
+    return transaction.source;
+  }
+}
+
+/**
+ * @typedef FetchBalanceTransactionFilters
+ * @property {string} [filterByType]
+ * @property {string} [filterByPayout]
+ * @property {import("./date-fns.js").Period} [period]
+ */
+
+/**
+ * @typedef Payout
+ * @property {string} type
+ * @property {string} transaction_id
+ * @property {string} id
+ * @property {number} amount
+ * @property {number} fee
+ * @property {string} currency
+ * @property {string} status
+ * @property {Date} created
+ * @property {Date} available_on
+ * @property {Date | null} arrival_date
+ */
+
+/**
+ * @typedef Results
+ * @property {string[]} warnings
+ * @property {string[]} errors
+ * @property {Payout[]} payouts
+ * @property {object[]} charges
+ * @property {object[]} taxes
+ * @property {object[]} stripe_fees
+ * @property {object[]} application_fees
+ */
+
+/**
+ * @typedef Totals
+ * @property {number} errors
+ * @property {number} unavailable_transactions
+ * @property {number} pending_transactions
+ * @property {number} payouts_gross
+ * @property {number} payouts_net
+ * @property {number} payouts_fees
+ * @property {number} stripe_fees
+ * @property {number} charge_gross
+ * @property {number} charge_net
+ * @property {number} charge_fees
+ * @property {number} charge_stripe_fees
+ * @property {number} charge_application_fees
+ * @property {number} charge_tax_fees
+ */
+
+/**
+ * @typedef BalanceTransactionResults
+ * @property {Results} results
+ * @property {Totals} totals
+ * @property {import("stripe").Stripe.BalanceTransaction[]} rawTransactions
+ * @property {import("stripe").Stripe.BalanceTransaction[]} unknownTransactions
+ */
+
+/**
+ * Fetches balance transactions from Stripe and formulates data for them
+ * @param {Stripe} stripe
+ * @param {FetchBalanceTransactionFilters} [filterOptions]
+ * @returns {Promise<BalanceTransactionResults>}
+ */
+export async function fetchBalanceTransactions(stripe, filterOptions) {
+  /** @type {Results} */
+  const results = {
+    taxes: [],
+    stripe_fees: [],
+    application_fees: [],
+    payouts: [],
+    charges: [],
+    errors: [],
+    warnings: [],
   };
 
   const rawTransactions = [];
   const unknownTransactions = [];
-
-  const payouts = [];
-  const charges = [];
 
   const totals = {
     errors: 0,
@@ -192,11 +281,7 @@ export async function fetchBalanceTransactions(stripe, period) {
     charge_tax_fees: 0,
   };
 
-  for await (const transaction of stripe.balanceTransactions.list({
-    created: {
-      gte: period.start.valueOf() / 1000,
-      lt: period.end.valueOf() / 1000,
-    },
+  const requestOptions = {
     expand: [
       // basic data for all balance transactions:
       "data.source",
@@ -206,7 +291,26 @@ export async function fetchBalanceTransactions(stripe, period) {
       // data for payouts:
       "data.source.destination",
     ],
-  })) {
+  };
+
+  if (typeof filterOptions === "object") {
+    if (filterOptions.filterByType) {
+      requestOptions.type = filterOptions.filterByType;
+    } else if (filterOptions.filterByPayout) {
+      requestOptions.payout = filterOptions.filterByPayout;
+    }
+
+    if (filterOptions.period) {
+      requestOptions.created = {
+        gte: filterOptions.period.start.valueOf() / 1000,
+        lt: filterOptions.period.end.valueOf() / 1000,
+      };
+    }
+  }
+
+  for await (const transaction of stripe.balanceTransactions.list(
+    requestOptions
+  )) {
     rawTransactions.push(transaction);
 
     // ignore pending transactions, but record a count:
@@ -223,7 +327,7 @@ export async function fetchBalanceTransactions(stripe, period) {
 
     // Log for unhandled transaction types:
     if (!knownTransactionTypes.includes(transaction.type)) {
-      console.warn(
+      results.warnings.push(
         `Unknown transaction type: ${transaction.type}, id: ${transaction.id}`
       );
       unknownTransactions.push(transaction);
@@ -235,24 +339,47 @@ export async function fetchBalanceTransactions(stripe, period) {
     // Calculate data:
     if (transaction.type === "stripe_fee") {
       totals.stripe_fees += transaction.amount * -1;
+
+      results.stripe_fees.push({
+        type: "stripe_fee",
+        transaction_id: transaction.id,
+        charge_id: sourceId(transaction),
+        amount: transaction.amount * -1,
+        currency: transaction.currency,
+        description: transaction.description,
+        created: new Date(transaction.created * 1000),
+        available_on: new Date(transaction.available_on * 1000),
+      });
     }
 
-    if (transaction.type === "payout") {
+    if (
+      transaction.type === "payout" &&
+      typeof transaction.source === "object" &&
+      transaction.source !== null
+    ) {
       // Payouts are negative, but I expect the fees to be positive on them:
       totals.payouts_gross += transaction.amount * -1;
       totals.payouts_net += transaction.net * -1;
       totals.payouts_fees += transaction.fee;
 
-      payouts.push({
+      let arrival_date = null;
+      // @ts-ignore
+      if (typeof transaction.source?.arrival_date === "number") {
+        // @ts-ignore
+        arrival_date = new Date(transaction.source.arrival_date * 1000);
+      }
+
+      results.payouts.push({
+        type: "payout",
         transaction_id: transaction.id,
-        id: transaction.source.id,
-        amount: transaction.amount,
+        id: sourceId(transaction),
+        amount: transaction.amount * -1,
         fee: transaction.fee,
         currency: transaction.currency,
         status: transaction.status,
         created: new Date(transaction.created * 1000),
         available_on: new Date(transaction.available_on * 1000),
-        arrival_date: new Date(transaction.source.available_on * 1000),
+        arrival_date,
       });
     }
 
@@ -272,9 +399,12 @@ export async function fetchBalanceTransactions(stripe, period) {
           totals.charge_tax_fees += fee.amount;
         }
 
-        taxesAndFees[fee.type].push({
+        let resultType = feeTypeMap[fee.type];
+
+        results[resultType].push({
+          type: fee.type,
           transaction_id: transaction.id,
-          charge_id: transaction.source.id,
+          charge_id: sourceId(transaction),
           amount: fee.amount,
           currency: fee.currency,
           description: fee.description,
@@ -290,7 +420,7 @@ export async function fetchBalanceTransactions(stripe, period) {
           console.error(errors);
         }
 
-        charges.push(charge);
+        results.charges.push(charge);
       } catch (err) {
         console.error(err);
         debug("transaction", transaction);
@@ -306,8 +436,6 @@ export async function fetchBalanceTransactions(stripe, period) {
     rawTransactions,
     unknownTransactions,
     totals,
-    taxesAndFees,
-    payouts,
-    charges,
+    results,
   };
 }

@@ -7,6 +7,25 @@ import { getStreamAsBuffer } from "get-stream";
 // and required customizations for my use case.
 
 /**
+ * Convert numbers to fixed value and adds currency
+ *
+ * @private
+ * @param  {string | number} value
+ * @return string
+ */
+export function prettyPrice(value, currency) {
+  if (typeof value === "number") {
+    value = (value / 100).toFixed(2);
+  }
+
+  if (currency) {
+    value = `${String(value).padStart(5, " ")} ${currency}`.trimEnd();
+  }
+
+  return String(value).padStart(5, " ");
+}
+
+/**
  * Invoice
  * This is the constructor that creates a new instance containing the needed
  * methods.
@@ -19,13 +38,6 @@ export default class Invoice {
   constructor(options) {
     this.defaultOptions = {
       style: {
-        document: {
-          marginLeft: 30,
-          marginRight: 30,
-          marginTop: 30,
-          size: "A4",
-        },
-
         fonts: {
           normal: {
             name: "Helvetica",
@@ -46,7 +58,7 @@ export default class Invoice {
             maxWidth: 140,
           },
           total: {
-            position: 490,
+            position: 475,
             maxWidth: 80,
           },
         },
@@ -108,16 +120,13 @@ export default class Invoice {
     this.options = defaults(options, this.defaultOptions);
 
     this.document = new PDFDocument({
-      size: this.options.size,
+      size: "A4",
+      margin: 30,
     });
 
     this.storage = {
       header: {
         image: null,
-      },
-      cursor: {
-        x: 0,
-        y: 0,
       },
       customer: {
         height: 0,
@@ -128,26 +137,13 @@ export default class Invoice {
     };
   }
 
-  /**
-   * Load custom fonts
-   *
-   * @private
-   * @return void
-   */
-  loadCustomFonts() {
-    // Register custom fonts
-    if (this.options.style.fonts.normal.path) {
-      this.document.registerFont(
-        this.options.style.fonts.normal.name,
-        this.options.style.fonts.normal.path
-      );
+  moveTo(x, y) {
+    if (x !== null) {
+      this.document.x = x;
     }
 
-    if (this.options.style.fonts.bold.path) {
-      this.document.registerFont(
-        this.options.style.fonts.bold.name,
-        this.options.style.fonts.bold.path
-      );
+    if (y !== null) {
+      this.document.y = y;
     }
   }
 
@@ -201,34 +197,16 @@ export default class Invoice {
       .rect(0, 0, this.document.page.width, this.options.style.header.height)
       .fill(this.options.style.header.backgroundColor);
 
-    // Add an image to the header if any
-    // if (
-    //   this.options.style.header.image &&
-    //   this.options.style.header.image.path
-    // ) {
-    //   this.document.image(
-    //     this.options.style.header.image.path,
-    //     this.options.style.document.marginLeft,
-    //     this.options.style.document.marginTop,
-    //     {
-    //       width: this.options.style.header.image.width,
-    //       height: this.options.style.header.image.height,
-    //     }
-    //   );
-    // }
-
-    // Write header details
-    this.setCursor("x", this.options.style.document.marginLeft);
-    this.setCursor("y", this.options.style.document.marginTop);
-
     this.setText(this.options.data.invoice.name, {
       fontSize: "title",
       fontWeight: "bold",
       color: this.options.style.header.regularColor,
     });
 
-    this.setCursor("x", this.options.style.header.textPosition);
-    this.setCursor("y", this.options.style.document.marginTop);
+    this.moveTo(
+      this.options.style.header.textPosition,
+      this.document.page.margins.top
+    );
 
     this.options.data.invoice.header.forEach((line, index) => {
       this.setText(line.label.length > 0 ? `${line.label}:` : "", {
@@ -253,6 +231,11 @@ export default class Invoice {
         });
       });
     });
+
+    this.moveTo(
+      this.document.page.margins.left,
+      this.options.style.header.height + 18
+    );
   }
 
   /**
@@ -262,16 +245,28 @@ export default class Invoice {
    * @return void
    */
   generateDetails(entity, type) {
+    if (!entity) {
+      this.moveTo(
+        this.document.page.margins.left,
+        this.options.style.header.height + 18
+      );
+      return;
+    }
+
     let _maxWidth = 250;
     let _fontMargin = 4;
 
-    this.setCursor("y", this.options.style.header.height + 18);
-
     // Use a different left position
     if (type === "customer") {
-      this.setCursor("x", this.options.style.document.marginLeft);
+      this.moveTo(
+        this.document.page.margins.left,
+        this.options.style.header.height + 18
+      );
     } else {
-      this.setCursor("x", this.options.style.header.textPosition);
+      this.moveTo(
+        this.options.style.header.textPosition,
+        this.options.style.header.height + 18
+      );
     }
 
     entity.forEach((line) => {
@@ -299,7 +294,7 @@ export default class Invoice {
       });
     });
 
-    this.storage[type].height = this.storage.cursor.y;
+    this.storage[type].height = this.document.y;
   }
 
   /**
@@ -310,87 +305,87 @@ export default class Invoice {
    * @param  {array} columns
    * @return void
    */
-  generateTableRow(type, columns) {
-    let _fontWeight = "normal",
-      _colorCode = "secondary";
-
-    this.storage.cursor.y = this.document.y;
-
-    this.storage.cursor.y += 17;
+  generateTableRow(type, columns, rowTop) {
+    let fontWeight = "normal";
 
     if (type === "header") {
-      _fontWeight = "bold";
-      _colorCode = "primary";
+      fontWeight = "bold";
     }
 
-    let _start = this.options.style.document.marginLeft;
-    let _maxY = this.storage.cursor.y;
-    let currentY = this.storage.cursor.y;
-    let extraY = 0;
+    let start = this.document.page.margins.left;
+    let maxRowHeight = 0;
 
-    // Computes columns by giving an extra space for the last column \
-    //   It is used to keep a perfect alignement
-    let _maxWidth =
-      (this.options.style.header.textPosition -
-        _start -
-        this.options.style.document.marginRight) /
+    let maxWidth =
+      (start + this.document.page.width - this.document.page.margins.right) /
       (columns.length - 2);
 
     columns.forEach((column, index) => {
       let _value;
-
-      this.setCursor("Y", currentY);
+      let align = "left";
 
       if (index === 0) {
-        this.setCursor("x", _start);
-      } else if (index == 1) {
-        _maxWidth = this.options.style.table.quantity.maxWidth;
-        this.setCursor("x", this.options.style.table.quantity.position);
+        this.moveTo(start, rowTop);
+      } else if (columns.length > 2 && index == 1) {
+        maxWidth = this.options.style.table.quantity.maxWidth;
+
+        this.moveTo(this.options.style.table.quantity.position, rowTop);
       } else {
-        _maxWidth = this.options.style.table.total.maxWidth;
-        this.setCursor("x", this.options.style.table.total.position);
+        maxWidth = this.options.style.table.total.maxWidth;
+        align = "right";
+        this.moveTo(this.options.style.table.total.position, rowTop);
       }
 
       _value = column.value;
 
       if (column.price === true) {
-        _value = this.prettyPrice(_value);
+        _value = prettyPrice(_value, this.options.data.invoice.currency);
       }
 
       this.setText(_value, {
-        colorCode: "primary",
-        maxWidth: _maxWidth,
-        fontWeight: _fontWeight,
-        skipDown: true,
+        colorCode: type === "subitem" ? "secondary" : "primary",
+        maxWidth: maxWidth,
+        fontWeight: fontWeight,
+        align: column.price ? "right" : align,
       });
 
       // Handles adding additional details to a line item (e.g., subscription period)
       if (!!column.subtext) {
-        const prevY = this.storage.cursor.y;
-        this.storage.cursor.y += this.options.style.text.regularSize * 1.25;
-        this.setText(column.subtext, {
+        this.document.moveDown(0.5);
+        this.setText(column.subtext.trim(), {
           colorCode: "secondary",
-          maxWidth: _maxWidth,
-          fontWeight: _fontWeight,
-          skipDown: true,
+          maxWidth: maxWidth,
+          fontWeight: fontWeight,
         });
-
-        extraY = this.storage.cursor.y - prevY;
-
-        this.storage.cursor.y = prevY;
       }
 
-      _start += _maxWidth + 10;
-
-      // Increase y position in case of a line return
-      if (this.document.y >= _maxY) {
-        _maxY = this.document.y;
+      if (column.subitems && column.subitems.length > 0) {
+        this.document.moveDown(0.5);
+        column.subitems.forEach((subitem) => {
+          this.generateTableRow(
+            "subitem",
+            [
+              {
+                value: subitem.description,
+              },
+              {
+                value: subitem.date,
+              },
+              {
+                value: subitem.price,
+                price: true,
+              },
+            ],
+            this.document.y
+          );
+          this.document.moveDown(0.25);
+        });
       }
+
+      maxRowHeight = Math.max(maxRowHeight, this.document.y - rowTop);
+      start += maxWidth + 10;
     });
 
-    // Set y to the max y position
-    this.setCursor("y", _maxY + extraY);
-    this.generateLine();
+    this.moveTo(this.document.page.margins.left, rowTop + maxRowHeight);
   }
 
   /**
@@ -400,19 +395,20 @@ export default class Invoice {
    * @return void
    */
   generateLine() {
-    this.storage.cursor.y += this.options.style.text.regularSize / 2 + 2;
+    this.document.moveDown(0.4);
+
+    const lineY = this.document.y - 1;
 
     this.document
       .strokeColor("#F0F0F0")
       .lineWidth(1)
-      .moveTo(this.options.style.document.marginRight, this.storage.cursor.y)
+      .moveTo(this.document.page.margins.left - 10, lineY)
       .lineTo(
-        this.document.page.width - this.options.style.document.marginRight,
-        this.storage.cursor.y
+        this.document.page.width - this.document.page.margins.right,
+        lineY
       )
-      .stroke();
-
-    this.storage.cursor.y += this.options.style.text.regularSize / 2;
+      .stroke()
+      .moveDown(0.6);
   }
 
   /**
@@ -422,48 +418,58 @@ export default class Invoice {
    * @return void
    */
   generateLineItems(lineItems) {
-    let _startY = Math.max(
-      this.storage.customer.height,
-      this.storage.seller.height
+    let startY = this.options.style.header.height + 18;
+
+    if (this.storage.customer.height > 0 || this.storage.seller.height > 0) {
+      startY =
+        Math.max(this.storage.customer.height, this.storage.seller.height) + 18;
+    }
+
+    this.moveTo(this.document.page.margins.left, startY);
+
+    this.generateTableRow(
+      "header",
+      this.options.data.invoice.details.header,
+      this.document.y
     );
 
-    this.setCursor("y", _startY);
-
-    this.setText("\n\n");
-
-    this.generateTableRow("header", this.options.data.invoice.details.header);
+    this.generateLine();
 
     lineItems.forEach((lineItem) => {
-      this.generateTableRow("row", lineItem);
+      this.generateTableRow("row", lineItem, this.document.y);
+
+      this.generateLine();
     });
 
-    this.storage.cursor.y += this.options.style.text.regularSize / 2;
+    this.document.moveDown(0.5);
   }
 
   generateTotals(totals) {
     totals.forEach((total) => {
       let _value = total.value;
+      let rowTop = this.document.y + 12;
 
-      this.setCursor("x", this.options.style.table.quantity.position);
+      this.moveTo(this.options.style.table.quantity.position, rowTop);
       this.setText(total.label, {
         colorCode: "primary",
         fontWeight: "bold",
-        marginTop: 12,
         maxWidth: this.options.style.table.quantity.maxWidth,
-        skipDown: true,
       });
 
-      this.setCursor("x", this.options.style.table.total.position);
+      this.moveTo(this.options.style.table.total.position, rowTop);
 
       if (total.price === true) {
-        _value = this.prettyPrice(total.value);
+        _value = prettyPrice(total.value, this.options.data.invoice.currency);
       }
 
       this.setText(_value, {
         colorCode: "primary",
         fontWeight: "bold",
         maxWidth: this.options.style.table.total.maxWidth,
+        align: total.price ? "right" : "left",
       });
+
+      this.document.moveDown();
     });
   }
 
@@ -474,11 +480,9 @@ export default class Invoice {
    * @return void
    */
   generateLegal(legal) {
-    this.storage.cursor.y += 60;
+    this.moveTo(this.document.page.margins.left, this.document.y + 30);
 
     legal.forEach((legal) => {
-      this.setCursor("x", this.options.style.document.marginLeft);
-
       this.setText(legal.value, {
         fontWeight: legal.weight,
         colorCode: legal.color || "primary",
@@ -486,37 +490,6 @@ export default class Invoice {
         marginTop: 10,
       });
     });
-  }
-
-  /**
-   * Moves the internal cursor
-   *
-   * @private
-   * @param  {string} axis
-   * @param  {number} value
-   * @return void
-   */
-  setCursor(axis, value) {
-    this.storage.cursor[axis] = value;
-  }
-
-  /**
-   * Convert numbers to fixed value and adds currency
-   *
-   * @private
-   * @param  {string | number} value
-   * @return string
-   */
-  prettyPrice(value) {
-    if (typeof value === "number") {
-      value = (value / 100).toFixed(2);
-    }
-
-    if (this.options.data.invoice.currency) {
-      value = `${value} ${this.options.data.invoice.currency}`;
-    }
-
-    return value;
   }
 
   /**
@@ -535,9 +508,9 @@ export default class Invoice {
     let _color = options.color || "";
     let _marginTop = options.marginTop || 0;
     let _maxWidth = options.maxWidth;
-    let _fontSizeValue = 0;
+    let fontSize = 0;
 
-    this.storage.cursor.y += _marginTop;
+    this.document.y += _marginTop;
 
     if (!_color) {
       if (_colorCode === "primary") {
@@ -548,42 +521,31 @@ export default class Invoice {
     }
 
     if (_fontSize === "heading") {
-      _fontSizeValue = this.options.style.text.headingSize;
+      fontSize = this.options.style.text.headingSize;
     } else if (_fontSize === "title") {
-      _fontSizeValue = this.options.style.text.titleSize;
+      fontSize = this.options.style.text.titleSize;
     } else {
-      _fontSizeValue = this.options.style.text.regularSize;
+      fontSize = this.options.style.text.regularSize;
     }
 
     this.document.font(this.getFontOrFallback(_fontWeight));
 
     this.document.fillColor(_color);
-    this.document.fontSize(_fontSizeValue);
+    this.document.fontSize(fontSize);
+
+    const textOptions = {
+      align: _textAlign,
+      width: _maxWidth,
+      // Increase the character spacing slightly for better legibility:
+      characterSpacing: 0.05,
+    };
 
     this.document.text(
       this.valueOrTransliterate(text),
-      this.storage.cursor.x,
-      this.storage.cursor.y,
-      {
-        align: _textAlign,
-        width: _maxWidth,
-        // Increase the character spacing slightly for better legibility:
-        characterSpacing: 0.1,
-      }
+      this.document.x,
+      this.document.y,
+      textOptions
     );
-
-    let _diff = this.document.y - this.storage.cursor.y;
-
-    this.storage.cursor.y = this.document.y;
-
-    // Do not move down
-    if (options.skipDown === true) {
-      if (_diff > 0) {
-        this.storage.cursor.y -= _diff;
-      } else {
-        this.storage.cursor.y -= 11.5;
-      }
-    }
   }
 
   setCustomer(customer) {

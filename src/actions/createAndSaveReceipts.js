@@ -124,12 +124,10 @@ async function createAndSaveReceipt(
   const legal = [];
   if (!hasTax) {
     legal.push({
-      value: taxLaw.smallBusinessStatement,
+      value: taxLaw.smallBusinessStatement + "\n",
       weight: "bold",
       color: "primary",
     });
-    // Additional new line:
-    legal.push({ value: " " });
   }
 
   if (charge.invoice.id) {
@@ -207,14 +205,16 @@ export default async function createAndSaveReceipts(
 ) {
   validateTaxLaw(config);
 
-  const results = await fetchBalanceTransactions(stripe, period);
+  const balanceTransactions = await fetchBalanceTransactions(stripe, {
+    period,
+  });
 
   // Ensure the output directory exists:
   const receiptDir = joinPath(process.cwd(), "receipts");
   await mkdirp(receiptDir);
 
   // For each charge, create a receipt:
-  const receipts = results.charges
+  const receipts = balanceTransactions.results.charges
     // Stripe returns reverse chronological, resulting in incorrect receipt numbers
     .sort((a, b) => {
       if (a.created < b.created) {

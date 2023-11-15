@@ -1,11 +1,30 @@
+/**
+ * @typedef Period
+ * @property {Date} start
+ * @property {Date} end
+ */
+
+/**
+ * @param {number} year
+ * @param {number} month
+ * @returns {Date}
+ */
 function startDate(year, month) {
   return new Date(year, month, 1, 0);
 }
 
+/**
+ * @param {number} year
+ * @param {number} month
+ * @returns {Date}
+ */
 function endDate(year, month) {
   return new Date(year, month, 0, 24);
 }
 
+/**
+ * @returns {Period[]}
+ */
 export function getMonthPeriods() {
   const date = new Date();
   const year = date.getFullYear();
@@ -55,6 +74,15 @@ export function formatDate(date, longDate) {
         }
   ).format(date);
 }
+
+const isoFormatter = Intl.DateTimeFormat("fr-CA", {
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+export function formatIsoDate(date) {
+  return isoFormatter.format(date);
+}
 export function formatPeriod(period, longDate) {
   return `${formatDate(period.start, !!longDate)} until ${formatDate(
     period.end,
@@ -91,3 +119,19 @@ export function getMonthChoices() {
 
 //   return true;
 // },
+
+/**
+ * @param {{ created: Date }[]} results
+ * @returns {Object[]}
+ */
+export function sortByCreated(results) {
+  return results.sort((a, b) => {
+    if (a.created < b.created) {
+      return -1;
+    } else if (a.created > b.created) {
+      return 1;
+    } else {
+      return 0;
+    }
+  });
+}

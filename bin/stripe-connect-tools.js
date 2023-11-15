@@ -6,6 +6,7 @@ import { getStripeClients } from "../src/stripe.js";
 
 import downloadInvoices from "../src/actions/downloadInvoices.js";
 import createAndSaveReceipts from "../src/actions/createAndSaveReceipts.js";
+import savePayoutReceipts from "../src/actions/savePayoutReceipts.js";
 import { debug } from "../src/utils.js";
 
 async function main() {
@@ -96,6 +97,12 @@ async function main() {
       await downloadInvoices(stripe, responses.account, responses.period);
       break;
     case "savePayoutReceipts":
+      await savePayoutReceipts(
+        stripe,
+        responses.account,
+        responses.period,
+        config
+      );
       break;
     default:
       throw new Error(`Unhandled command: ${responses.action}`);

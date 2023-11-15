@@ -12,16 +12,16 @@
   "license": "ISC",
   "dependencies": {
     "@iarna/toml": "^2.2.5",
-    "@types/node": "^20.8.4",
+    "@types/node": "^20.9.0",
     "convict": "^6.2.4",
     "convict-format-with-validator": "^6.2.0",
-    "countries-list": "^3.0.5",
+    "countries-list": "^3.0.6",
     "fs-extra": "^11.1.1",
     "get-stream": "^8.0.1",
     "lodash.defaults": "^4.2.0",
-    "pdfkit": "^0.13.0",
+    "pdfkit": "^0.14.0",
     "prettyjson": "^1.2.5",
     "prompts": "^2.4.2",
-    "stripe": "^13.8.0"
+    "stripe": "^14.4.0"
   }
 }

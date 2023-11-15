@@ -1,4 +1,4 @@
-import { createWriteStream } from "node:fs";
+import { createWriteStream, existsSync } from "node:fs";
 import { Readable } from "node:stream";
 import { finished } from "node:stream/promises";
 import { join as joinPath } from "node:path";
@@ -49,6 +49,17 @@ export default async function downloadInvoices(stripe, accountName, period) {
     }
 
     const destination = joinPath(downloadsDir, invoiceFilename);
+
+    if (existsSync(destination)) {
+      console.log(
+        `Skipped invoice ${invoice.number} from ${accountName}: Already downloaded`
+      );
+      continue;
+    } else {
+      console.log(
+        `Downloading invoice ${invoice.number} from ${accountName}...`
+      );
+    }
 
     const fileStream = createWriteStream(destination, { flags: "wx" });
     // @ts-ignore

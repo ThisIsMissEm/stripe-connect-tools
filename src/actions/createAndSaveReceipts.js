@@ -210,7 +210,7 @@ export default async function createAndSaveReceipts(
   });
 
   // Ensure the output directory exists:
-  const receiptDir = joinPath(process.cwd(), "receipts");
+  const receiptDir = joinPath(config.output.directory, "receipts");
   await mkdirp(receiptDir);
 
   // For each charge, create a receipt:

@@ -4,11 +4,16 @@ import { finished } from "node:stream/promises";
 import { join as joinPath } from "node:path";
 import { mkdirp } from "fs-extra";
 
-export default async function downloadInvoices(stripe, accountName, period) {
+export default async function downloadInvoices(
+  stripe,
+  accountName,
+  period,
+  config
+) {
   const promises = [];
 
   // Ensure the output directory exists:
-  const downloadsDir = joinPath(process.cwd(), "downloads");
+  const downloadsDir = joinPath(config.output.directory, "downloads");
   await mkdirp(downloadsDir);
 
   for await (const invoice of stripe.invoices.list({

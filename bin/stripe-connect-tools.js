@@ -94,7 +94,12 @@ async function main() {
       );
       break;
     case "downloadInvoices":
-      await downloadInvoices(stripe, responses.account, responses.period);
+      await downloadInvoices(
+        stripe,
+        responses.account,
+        responses.period,
+        config
+      );
       break;
     case "savePayoutReceipts":
       await savePayoutReceipts(

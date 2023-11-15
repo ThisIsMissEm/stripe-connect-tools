@@ -12,6 +12,13 @@ convict.addParser({ extension: "toml", parse });
 convict.addFormats(convictFormatValidators);
 
 const config = convict({
+  output: {
+    directory: {
+      doc: "Location save output files to",
+      format: String,
+      default: process.cwd(),
+    },
+  },
   business: {
     name: {
       doc: "Name of the business (e.g., your name as a freelancer)",

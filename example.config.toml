@@ -1,3 +1,6 @@
+[output]
+directory = "/some/directory/"
+
 [business]
 name = ""
 email = ""

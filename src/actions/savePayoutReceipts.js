@@ -185,7 +185,7 @@ export default async function savePayoutReceipts(
   config
 ) {
   // Ensure the output directory exists:
-  const payoutsDir = joinPath(process.cwd(), "payouts");
+  const payoutsDir = joinPath(config.output.directory, "payouts");
   await mkdirp(payoutsDir);
 
   const payoutTransactions = await fetchBalanceTransactions(stripe, {

@@ -30,6 +30,10 @@ function processCharge(transaction) {
 
   const errors = [];
   const charge = {
+    // FIXME: both payments and charges are processed with this method, so type
+    // of "charge" isn't actually correct, but fixing requires fixing the
+    // grouping logic on payout receipts, which is too complicated to fix right
+    // now.
     type: "charge",
     transaction_id: transaction.id,
     id: sourceId(transaction),
@@ -155,6 +159,14 @@ function processCharge(transaction) {
         const country = getCountryData(payment_method.country);
         charge.billing_details.address.country = country.name;
       }
+    } else if (payment_method_type === "link") {
+      if (
+        charge.billing_details.address &&
+        !charge.billing_details.address.country
+      ) {
+        const country = getCountryData(payment_method.country);
+        charge.billing_details.address.country = country.name;
+      }
     } else {
       errors.push({
         error: `unhandled payment method: ${payment_method_type}`,
@@ -168,6 +180,7 @@ function processCharge(transaction) {
 
 export const knownTransactionTypes = [
   "charge",
+  "refund",
   "payout",
   "stripe_fee",
   "payment",
@@ -214,6 +227,7 @@ function sourceId(transaction) {
  * @property {string[]} errors
  * @property {Payout[]} payouts
  * @property {object[]} charges
+ * @property {object[]} refunds
  * @property {object[]} taxes
  * @property {object[]} stripe_fees
  * @property {object[]} application_fees
@@ -258,6 +272,7 @@ export async function fetchBalanceTransactions(stripe, filterOptions) {
     application_fees: [],
     payouts: [],
     charges: [],
+    refunds: [],
     errors: [],
     warnings: [],
   };
@@ -298,9 +313,7 @@ export async function fetchBalanceTransactions(stripe, filterOptions) {
       requestOptions.type = filterOptions.filterByType;
     } else if (filterOptions.filterByPayout) {
       requestOptions.payout = filterOptions.filterByPayout;
-    }
-
-    if (filterOptions.period) {
+    } else if (filterOptions.period) {
       requestOptions.created = {
         gte: filterOptions.period.start.valueOf() / 1000,
         lt: filterOptions.period.end.valueOf() / 1000,
@@ -335,6 +348,18 @@ export async function fetchBalanceTransactions(stripe, filterOptions) {
     }
 
     // debug(transaction);
+    if (transaction.type === "refund") {
+      results.refunds.push({
+        type: "refund",
+        transaction_id: transaction.id,
+        charge_id: sourceId(transaction),
+        amount: transaction.amount,
+        currency: transaction.currency,
+        description: transaction.description,
+        created: new Date(transaction.created * 1000),
+        available_on: new Date(transaction.available_on * 1000),
+      });
+    }
 
     // Calculate data:
     if (transaction.type === "stripe_fee") {
@@ -388,7 +413,7 @@ export async function fetchBalanceTransactions(stripe, filterOptions) {
       debug("transaction", transaction);
     }
 
-    if (transaction.type === "charge") {
+    if (transaction.type === "charge" || transaction.type === "payment") {
       // Calculate individual fee type totals:
       transaction.fee_details.forEach((fee) => {
         if (fee.type === "stripe_fee") {
@@ -418,11 +443,12 @@ export async function fetchBalanceTransactions(stripe, filterOptions) {
 
         if (errors.length) {
           console.error(errors);
+          results.errors.push(err);
         }
 
         results.charges.push(charge);
       } catch (err) {
-        console.error(err);
+        results.errors.push(err);
         debug("transaction", transaction);
       }
 

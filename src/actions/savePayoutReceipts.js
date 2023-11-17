@@ -73,6 +73,10 @@ function payoutLineItems(transactions) {
         tx.description = "Stripe Subscription Fees";
       }
 
+      if (tx.type === "refund") {
+        tx.description = "Refunds";
+      }
+
       if (tx.type === "application_fee" || tx.type === "stripe_fee") {
         const prev = txs.findIndex(
           (stx) => stx.type === tx.type && stx.description === tx.description
@@ -91,7 +95,12 @@ function payoutLineItems(transactions) {
       return txs;
     }, [])
     .reduce((lineItems, tx) => {
-      const type = tx.type === "charge" ? "charge" : "fees";
+      const type =
+        tx.type === "charge"
+          ? "charge"
+          : tx.type === "refund"
+          ? "refund"
+          : "fees";
       const existingIdx = lineItems.findIndex(
         (lineItem) => lineItem.type == type
       );
@@ -135,7 +144,9 @@ function payoutLineItems(transactions) {
         },
         {
           value:
-            lineItem.type === "charge" ? lineItem.amount : lineItem.amount * -1,
+            lineItem.type === "charge" || lineItem.type === "refund"
+              ? lineItem.amount
+              : lineItem.amount * -1,
           price: true,
         },
       ];
@@ -212,6 +223,7 @@ export default async function savePayoutReceipts(
 
     const transactions = sortByCreated([
       ...payoutResult.results.charges,
+      ...payoutResult.results.refunds,
       ...payoutResult.results.taxes,
       ...payoutResult.results.stripe_fees,
       ...payoutResult.results.application_fees,

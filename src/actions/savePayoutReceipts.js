@@ -69,12 +69,12 @@ function subItemFor(tx) {
 function payoutLineItems(transactions) {
   return transactions
     .reduce((txs, tx) => {
-      if (tx.description.startsWith("Billing")) {
-        tx.description = "Stripe Subscription Fees";
-      }
-
       if (tx.type === "refund") {
         tx.description = "Refunds";
+      }
+
+      if (tx.description && tx.description.startsWith("Billing")) {
+        tx.description = "Stripe Subscription Fees";
       }
 
       if (tx.type === "application_fee" || tx.type === "stripe_fee") {

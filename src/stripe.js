@@ -146,6 +146,7 @@ function processCharge(transaction) {
 
     if (payment_method_type === "card") {
       charge.payment_method = {
+        type: payment_method_type,
         exp_year: payment_method.exp_year,
         exp_month: payment_method.exp_month,
         network: payment_method.network,
@@ -167,6 +168,14 @@ function processCharge(transaction) {
         const country = getCountryData(payment_method.country);
         charge.billing_details.address.country = country.name;
       }
+    } else if (payment_method_type === "paypal") {
+      charge.payment_method = {
+        type: payment_method_type,
+        payer_email: payment_method.payer_email,
+        payer_id: payment_method.payer_id,
+        payer_name: payment_method.payer_name,
+        transaction_id: payment_method.transaction_id,
+      };
     } else {
       errors.push({
         error: `unhandled payment method: ${payment_method_type}`,
@@ -187,6 +196,8 @@ export const knownTransactionTypes = [
 ];
 
 const feeTypeMap = {
+  // Used by PayPal, in Stripe this is payment_method_passthrough_fee
+  passthrough_fee: "passthrough_fees",
   application_fee: "application_fees",
   stripe_fee: "stripe_fees",
   tax: "taxes",
@@ -230,6 +241,7 @@ function sourceId(transaction) {
  * @property {object[]} refunds
  * @property {object[]} taxes
  * @property {object[]} stripe_fees
+ * @property {object[]} passthrough_fees
  * @property {object[]} application_fees
  */
 
@@ -247,6 +259,7 @@ function sourceId(transaction) {
  * @property {number} charge_fees
  * @property {number} charge_stripe_fees
  * @property {number} charge_application_fees
+ * @property {number} charge_passthrough_fees
  * @property {number} charge_tax_fees
  */
 
@@ -269,6 +282,7 @@ export async function fetchBalanceTransactions(stripe, filterOptions) {
   const results = {
     taxes: [],
     stripe_fees: [],
+    passthrough_fees: [],
     application_fees: [],
     payouts: [],
     charges: [],
@@ -293,6 +307,7 @@ export async function fetchBalanceTransactions(stripe, filterOptions) {
     charge_fees: 0,
     charge_stripe_fees: 0,
     charge_application_fees: 0,
+    charge_passthrough_fees: 0,
     charge_tax_fees: 0,
   };
 
@@ -410,26 +425,34 @@ export async function fetchBalanceTransactions(stripe, filterOptions) {
       });
     }
 
-    // TODO: Implement payment type:
-    if (transaction.type === "payment") {
-      debug("transaction", transaction);
-    }
+    // // TODO: Implement payment type:
+    // if (transaction.type === "payment") {
+    //   debug("transaction", transaction);
+    // }
 
     if (transaction.type === "charge" || transaction.type === "payment") {
       // Calculate individual fee type totals:
       transaction.fee_details.forEach((fee) => {
-        if (fee.type === "stripe_fee") {
+        // Normalize fee type:
+        const fee_type =
+          fee.type === "payment_method_passthrough_fee"
+            ? "passthrough_fee"
+            : fee.type;
+
+        if (fee_type === "stripe_fee") {
           totals.charge_stripe_fees += fee.amount;
-        } else if (fee.type === "application_fee") {
+        } else if (fee_type === "application_fee") {
           totals.charge_application_fees += fee.amount;
+        } else if (fee_type === "passthrough_fee") {
+          totals.charge_passthrough_fees += fee.amount;
         } else {
           totals.charge_tax_fees += fee.amount;
         }
 
-        let resultType = feeTypeMap[fee.type];
+        let resultType = feeTypeMap[fee_type];
 
         results[resultType].push({
-          type: fee.type,
+          type: fee_type,
           transaction_id: transaction.id,
           charge_id: sourceId(transaction),
           amount: fee.amount,

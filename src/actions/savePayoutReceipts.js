@@ -53,7 +53,11 @@ function subItemFor(tx) {
       date: formatIsoDate(tx.available_on),
       price: tx.amount,
     };
-  } else if (tx.type === "stripe_fee" || tx.type === "application_fee") {
+  } else if (
+    tx.type === "stripe_fee" ||
+    tx.type === "application_fee" ||
+    tx.type === "passthrough_fee"
+  ) {
     let description = tx.description.replace(/\sfee$/, " fees");
 
     return {
@@ -77,7 +81,16 @@ function payoutLineItems(transactions) {
         tx.description = "Stripe Subscription Fees";
       }
 
-      if (tx.type === "application_fee" || tx.type === "stripe_fee") {
+      if (tx.type === "passthrough_fee") {
+        txs.push(tx);
+        return txs;
+      }
+
+      if (
+        tx.type === "application_fee" ||
+        tx.type === "stripe_fee" ||
+        tx.type === "passthrough_fee"
+      ) {
         const prev = txs.findIndex(
           (stx) => stx.type === tx.type && stx.description === tx.description
         );
@@ -95,12 +108,7 @@ function payoutLineItems(transactions) {
       return txs;
     }, [])
     .reduce((lineItems, tx) => {
-      const type =
-        tx.type === "charge"
-          ? "charge"
-          : tx.type === "refund"
-          ? "refund"
-          : "fees";
+      const type = tx.type;
       const existingIdx = lineItems.findIndex(
         (lineItem) => lineItem.type == type
       );
@@ -118,19 +126,25 @@ function payoutLineItems(transactions) {
           case "charge":
             description = "Charge";
             break;
-          case "fees":
+          case "application_fee":
+          case "stripe_fee":
             description = "Stripe Fees";
+            break;
+          case "passthrough_fee":
+            description = "Processor Fees";
             break;
           default:
             description = tx.description;
         }
 
-        lineItems.push({
+        const lineItem = {
           type,
           description,
           subitems: [subItemFor(tx)],
           amount: tx.amount,
-        });
+        };
+
+        lineItems.push(lineItem);
       }
 
       return lineItems;
@@ -221,11 +235,14 @@ export default async function savePayoutReceipts(
       filterByPayout: payout.id,
     });
 
+    // console.log(JSON.stringify(payoutResult.results, null, 2));
+
     const transactions = sortByCreated([
       ...payoutResult.results.charges,
       ...payoutResult.results.refunds,
       ...payoutResult.results.taxes,
       ...payoutResult.results.stripe_fees,
+      ...payoutResult.results.passthrough_fees,
       ...payoutResult.results.application_fees,
     ]);
 

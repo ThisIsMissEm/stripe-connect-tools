@@ -313,7 +313,9 @@ export async function fetchBalanceTransactions(stripe, filterOptions) {
       requestOptions.type = filterOptions.filterByType;
     } else if (filterOptions.filterByPayout) {
       requestOptions.payout = filterOptions.filterByPayout;
-    } else if (filterOptions.period) {
+    }
+
+    if (filterOptions.period) {
       requestOptions.created = {
         gte: filterOptions.period.start.valueOf() / 1000,
         lt: filterOptions.period.end.valueOf() / 1000,

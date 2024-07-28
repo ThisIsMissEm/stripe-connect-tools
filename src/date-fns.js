@@ -35,7 +35,7 @@ export function getMonthPeriods() {
   if (date.getMonth() == 0) {
     // Add the previous month (December):
     periods.push({
-      start: startDate(year - 1, -1),
+      start: startDate(year, -1),
       end: endDate(year, 0),
     });
   } else {

@@ -101,3 +101,8 @@ if (existsSync(configFile)) {
 config.validate({ allowed: "strict" });
 
 export default config;
+
+/**
+ * @typedef configuration
+ * @type {ReturnType<typeof config.getProperties>}
+ */

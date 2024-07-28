@@ -4,6 +4,12 @@ import { finished } from "node:stream/promises";
 import { join as joinPath } from "node:path";
 import { mkdirp } from "fs-extra";
 
+/**
+ * @param {import("stripe").Stripe} stripe
+ * @param {string} accountName
+ * @param {import("../date-fns").Period} period
+ * @param {import("../configuration").configuration} config
+ */
 export default async function downloadInvoices(
   stripe,
   accountName,
@@ -22,7 +28,9 @@ export default async function downloadInvoices(
       lt: period.end.valueOf() / 1000,
     },
     expand: ["data.customer", "data.charge"],
-    status: "paid",
+    // SEPA direct debits can result in "open" invoices in a given period if the
+    // invoice hasn't been settled yet
+    //  status: "paid",
   })) {
     // fr-CA produces YYYY-MM-DD format dates:
     const formattedDate = Intl.DateTimeFormat("fr-CA", {

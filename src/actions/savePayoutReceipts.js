@@ -48,7 +48,9 @@ function subItemFor(tx) {
   if (tx.type === "charge") {
     return {
       description: tx.invoice.id
-        ? `Subscription: ${tx.customer.name ?? tx.customer.email}`
+        ? `Subscription: ${tx.customer.name ?? tx.customer.email}, ${
+            tx.invoice.number
+          }`
         : `Payment: ${tx.customer.name ?? tx.customer.email}`,
       date: formatIsoDate(tx.available_on),
       price: tx.amount,

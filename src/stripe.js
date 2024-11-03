@@ -479,7 +479,7 @@ export async function fetchBalanceTransactions(stripe, filterOptions) {
 
         if (errors.length) {
           console.error(errors);
-          results.errors.push(err);
+          errors.forEach((err) => results.errors.push(err.error));
         }
 
         results.charges.push(charge);

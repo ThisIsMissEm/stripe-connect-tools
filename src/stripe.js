@@ -2,29 +2,30 @@ import Stripe from "stripe";
 import { getCountryData } from "countries-list";
 import { debug } from "./utils.js";
 
-export function getStripeClients() {
-  const clients = {};
-
+export function getStripeTokens() {
+  const tokens = new Map();
   Object.keys(process.env).forEach((key) => {
     if (key.startsWith("STRIPE_TOKEN_")) {
       const account = key.slice(13).toLowerCase();
       const secret = process.env[key];
 
-      if (!secret) return;
-
-      const client = new Stripe(secret, {
-        apiVersion: "2023-08-16",
-      });
-
-      clients[account] = client;
+      tokens.set(account, secret);
     }
   });
 
-  const accounts = Object.keys(clients);
-
-  return [clients, accounts];
+  return tokens;
 }
 
+export function getStripeClient(secret) {
+  return new Stripe(secret, {
+    apiVersion: "2023-10-16",
+  });
+}
+
+/**
+ * Processes a single charge to try to get consistently shaped metadata
+ * @param {any} transaction
+ */
 function processCharge(transaction) {
   const txCharge = transaction.source;
 

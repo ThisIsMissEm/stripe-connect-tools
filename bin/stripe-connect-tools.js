@@ -1,8 +1,9 @@
 import prompts from "prompts";
+import op from "@1password/op-js";
 
 import configuration from "../src/configuration.js";
 import { getMonthChoices, formatPeriod } from "../src/date-fns.js";
-import { getStripeClients } from "../src/stripe.js";
+import { getStripeClient, getStripeTokens } from "../src/stripe.js";
 
 import downloadInvoices from "../src/actions/downloadInvoices.js";
 import createAndSaveReceipts from "../src/actions/createAndSaveReceipts.js";
@@ -11,10 +12,10 @@ import { debug } from "../src/utils.js";
 
 async function main() {
   // 1. Fetch all STRIPE_TOKEN_XXXX environment variables
-  const [stripeClients, stripeAccounts] = getStripeClients();
+  const stripeTokens = getStripeTokens();
   const config = configuration.getProperties();
 
-  if (stripeAccounts.length < 1) {
+  if (stripeTokens.size < 1) {
     console.log(
       "No stripe credentials found, please make sure you set them in .env as STRIPE_TOKEN_[name]\nIf you're using 1password, make sure the credential has a value."
     );
@@ -25,18 +26,18 @@ async function main() {
   const responses = await prompts([
     {
       type: "select",
-      name: "period",
-      message: "Select the period to create query for?",
-      choices: getMonthChoices(),
-    },
-    {
-      type: "select",
       name: "account",
       message: "Please select which Stripe account to use:",
-      choices: stripeAccounts.sort().map((account) => ({
+      choices: Array.from(stripeTokens.keys()).map((account) => ({
         title: account,
         value: account,
       })),
+    },
+    {
+      type: "select",
+      name: "period",
+      message: "Select the period to create query for?",
+      choices: getMonthChoices(),
     },
     {
       type: "select",
@@ -57,7 +58,7 @@ async function main() {
         {
           title: "Save Payout Receipts",
           description:
-            "(WIP) Retrieves each payout for the given period and generates a PDF receipt for the payout and the transactions involved",
+            "Retrieves each payout for the given period and generates a PDF receipt for the payout and the transactions involved",
           value: "savePayoutReceipts",
         },
       ],
@@ -69,14 +70,25 @@ async function main() {
     return process.exit(0);
   }
 
+  const accountName = responses.account;
+  const token = stripeTokens.get(accountName);
+  if (!token) {
+    console.log("\nFailed to find Stripe token?");
+    return process.exit(0);
+  }
+
+  let secret = token;
+  if (token.startsWith("op://")) {
+    secret = op.read.parse(token);
+  }
+
+  const stripe = getStripeClient(secret);
+
   console.log(
     `\nOkay processing ${responses.account} for ${formatPeriod(
       responses.period
     )}\n`
   );
-
-  const accountName = responses.account;
-  const stripe = stripeClients[accountName];
 
   if (process.env.NODE_DEBUG?.includes("stripe")) {
     stripe.on("request", (event) => {

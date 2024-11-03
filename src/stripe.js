@@ -177,6 +177,16 @@ function processCharge(transaction) {
         payer_name: payment_method.payer_name,
         transaction_id: payment_method.transaction_id,
       };
+    } else if (payment_method_type === "sepa_debit") {
+      charge.payment_method = {
+        type: payment_method_type,
+        bank_code: payment_method.bank_code,
+        branch_code: payment_method.branch_code,
+        country: payment_method.country,
+        fingerprint: payment_method.fingerprint,
+        last4: payment_method.last4,
+        mandate: payment_method.mandate,
+      };
     } else {
       errors.push({
         error: `unhandled payment method: ${payment_method_type}`,

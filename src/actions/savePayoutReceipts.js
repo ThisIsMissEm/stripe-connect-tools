@@ -2,7 +2,7 @@ import { join as joinPath } from "node:path";
 import { writeFile } from "node:fs/promises";
 import { mkdirp } from "fs-extra";
 
-import { fetchBalanceTransactions } from "../stripe.js";
+import { fetchBalanceTransactions, fetchPayouts } from "../stripe.js";
 import { debug } from "../utils.js";
 import { formatDate, formatIsoDate, sortByCreated } from "../date-fns.js";
 import Invoice, { prettyPrice } from "../generators/invoice.js";
@@ -23,7 +23,7 @@ function createReceipt(payout, payoutNumber) {
           },
           {
             label: "Payout Date",
-            value: formatDate(payout.created, true),
+            value: formatDate(payout.created * 1000, true),
           },
         ],
 
@@ -45,6 +45,13 @@ function createReceipt(payout, payoutNumber) {
 }
 
 function subItemFor(tx) {
+  if (tx.type === "refund") {
+    return {
+      description: `Refund: ${tx.charge_id}`,
+      date: formatIsoDate(tx.available_on),
+      price: tx.amount,
+    };
+  }
   if (tx.type === "charge") {
     return {
       description: tx.invoice.id
@@ -56,34 +63,81 @@ function subItemFor(tx) {
       price: tx.amount,
     };
   } else if (
-    tx.type === "stripe_fee" ||
     tx.type === "application_fee" ||
-    tx.type === "passthrough_fee"
+    tx.type === "passthrough_fee" ||
+    tx.type === "stripe_fee"
   ) {
     let description = tx.description.replace(/\sfee$/, " fees");
 
     return {
       description,
-      // date: tx.date ? formatIsoDate(tx.date) : null,
+      date: tx.created ? formatIsoDate(tx.created) : null,
+      price: tx.amount * -1,
+    };
+  } else if (tx.type === "stripe_billing_fee") {
+    let description = tx.description;
+
+    return {
+      description,
+      date: tx.created ? formatIsoDate(tx.created) : null,
       price: tx.amount * -1,
     };
   } else {
+    console.error(tx);
+    process.exit(1);
     return null;
+  }
+}
+
+function getLineItemType(txType, tx) {
+  if (txType === "refund") {
+    return "refund";
+  } else if (txType === "charge") {
+    return "charge";
+  } else if (
+    txType === "application_fee" ||
+    txType === "passthrough_fee" ||
+    txType === "stripe_fee"
+  ) {
+    return "fees";
+  } else if (txType === "stripe_billing_fee") {
+    return "stripe_billing_fee";
+  } else {
+    console.error(txType, tx);
+    process.exit(1);
   }
 }
 
 function payoutLineItems(transactions) {
   return transactions
     .reduce((txs, tx) => {
+      console.log(tx);
       if (tx.type === "refund") {
-        tx.description = "Refunds";
+        txs.push(tx);
+        return txs;
       }
 
-      if (tx.description && tx.description.startsWith("Billing")) {
-        tx.description = "Stripe Subscription Fees";
+      if (tx.type === "charge") {
+        txs.push(tx);
+        return txs;
       }
 
-      if (tx.type === "passthrough_fee") {
+      if (
+        tx.description.startsWith("Billing - Usage Fee") ||
+        tx.description.startsWith("Post Payment Invoices")
+      ) {
+        tx.type = "stripe_billing_fee";
+        txs.push(tx);
+        return txs;
+      }
+
+      if (
+        tx.description.startsWith("Billing") &&
+        tx.description.includes("Subscriptions")
+      ) {
+        const date = tx.description.match(/(\d{4}-\d{2}-\d{2})/)[1];
+        tx.type = "stripe_billing_fee";
+        tx.description = `Billing - Subscriptions (${date})`;
         txs.push(tx);
         return txs;
       }
@@ -102,6 +156,9 @@ function payoutLineItems(transactions) {
             amount: txs[prev].amount + tx.amount,
           };
           return txs;
+        } else {
+          txs.push({ ...tx, amount: tx.amount });
+          return txs;
         }
       }
 
@@ -110,7 +167,7 @@ function payoutLineItems(transactions) {
       return txs;
     }, [])
     .reduce((lineItems, tx) => {
-      const type = tx.type;
+      const type = getLineItemType(tx.type, tx);
       const existingIdx = lineItems.findIndex(
         (lineItem) => lineItem.type == type
       );
@@ -128,12 +185,14 @@ function payoutLineItems(transactions) {
           case "charge":
             description = "Charge";
             break;
-          case "application_fee":
-          case "stripe_fee":
-            description = "Stripe Fees";
+          case "fees":
+            description = "Fees";
             break;
-          case "passthrough_fee":
-            description = "Processor Fees";
+          case "stripe_billing_fee":
+            description = "Stripe Billing Fees";
+            break;
+          case "refund":
+            description = "Refunds";
             break;
           default:
             description = tx.description;
@@ -215,37 +274,39 @@ export default async function savePayoutReceipts(
   const payoutsDir = joinPath(config.output.directory, "payouts");
   await mkdirp(payoutsDir);
 
-  const payoutTransactions = await fetchBalanceTransactions(stripe, {
-    filterByType: "payout",
-    period,
-  });
-
-  // Stripe returns reverse chronological, resulting in incorrect receipt numbers
-  const payouts = sortByCreated(payoutTransactions.results.payouts);
+  const payouts = await fetchPayouts(stripe, period);
 
   const receipts = payouts.map(async (payout, index) => {
     const payoutDate = Intl.DateTimeFormat("fr-CA", {
       year: "numeric",
       month: "2-digit",
-    }).format(payout.created);
+    }).format(payout.created * 1000);
 
-    const payoutNumber = `${account.toUpperCase()}-${payoutDate}-${String(
+    const payoutNumber = `${payoutDate}-${account.toUpperCase()}-${String(
       index + 1
     ).padStart(4, "0")}`;
 
-    const payoutResult = await fetchBalanceTransactions(stripe, {
+    const payoutTransactions = await fetchBalanceTransactions(stripe, {
       filterByPayout: payout.id,
     });
 
-    // console.log(JSON.stringify(payoutResult.results, null, 2));
+    if (payoutTransactions.totals.errors > 0) {
+      payoutTransactions.results.errors.forEach((err) => {
+        console.log({ payoutId: payout.id, error: err });
+      });
+      process.exit(1);
+      return;
+    }
+
+    // console.log(JSON.stringify(payoutTransactions.results, null, 2));
 
     const transactions = sortByCreated([
-      ...payoutResult.results.charges,
-      ...payoutResult.results.refunds,
-      ...payoutResult.results.taxes,
-      ...payoutResult.results.stripe_fees,
-      ...payoutResult.results.passthrough_fees,
-      ...payoutResult.results.application_fees,
+      ...payoutTransactions.results.charges,
+      ...payoutTransactions.results.refunds,
+      ...payoutTransactions.results.taxes,
+      ...payoutTransactions.results.stripe_fees,
+      ...payoutTransactions.results.passthrough_fees,
+      ...payoutTransactions.results.application_fees,
     ]);
 
     return await savePayoutReceipt(

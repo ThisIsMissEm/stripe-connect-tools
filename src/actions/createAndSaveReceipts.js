@@ -209,6 +209,14 @@ export default async function createAndSaveReceipts(
     period,
   });
 
+  if (balanceTransactions.totals.errors > 0) {
+    balanceTransactions.results.errors.forEach((err) => {
+      console.log({ error: err });
+    });
+    process.exit(1);
+    return;
+  }
+
   // Ensure the output directory exists:
   const receiptDir = joinPath(config.output.directory, "receipts");
   await mkdirp(receiptDir);

@@ -121,7 +121,7 @@ export function getMonthChoices() {
 // },
 
 /**
- * @param {{ created: Date }[]} results
+ * @param {Object & { created: number }[]} results
  * @returns {Object[]}
  */
 export function sortByCreated(results) {

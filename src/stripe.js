@@ -1,6 +1,7 @@
 import Stripe from "stripe";
 import { getCountryData } from "countries-list";
 import { debug } from "./utils.js";
+import { sortByCreated } from "./date-fns.js";
 
 export function getStripeTokens() {
   const tokens = new Map();
@@ -500,4 +501,24 @@ export async function fetchBalanceTransactions(stripe, filterOptions) {
     totals,
     results,
   };
+}
+
+/**
+ *
+ * @param {Stripe} stripe
+ * @param {import("./date-fns.js").Period} period
+ */
+export async function fetchPayouts(stripe, period) {
+  const payouts = [];
+
+  for await (const payout of stripe.payouts.list({
+    arrival_date: {
+      gte: period.start.valueOf() / 1000,
+      lte: period.end.valueOf() / 1000,
+    },
+  })) {
+    payouts.push(payout);
+  }
+
+  return sortByCreated(payouts);
 }
